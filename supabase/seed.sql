@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- LearnAI — Seed Data (supabase/seed.sql)
--- Curriculum: Computer Science & AI Fundamentals
+-- Curriculum: Expanded Computer Science & Algorithms (14 Fine-Grained Topics)
 -- ==============================================================================
 
 INSERT INTO public.topics (slug, name, description, domain, difficulty_level)
@@ -13,31 +13,94 @@ VALUES
     1
   ),
   (
-    'two-pointers-sliding-window',
-    'Two Pointers & Sliding Window',
-    'Two-index optimization patterns: converging pointers, fast/slow runners, fixed-length windows, and dynamic subarray intervals.',
+    'two-pointers',
+    'Two Pointers',
+    'Two-index coordination patterns: converging boundaries, sorted pair search, palindrome verification, and partition schemes.',
     'Computer Science',
     2
   ),
   (
-    'binary-trees-and-graphs',
-    'Binary Trees & Graphs',
-    'Hierarchical & networked structures: DFS, BFS, tree traversal orders (in/pre/post), recursion, cycle detection, and adjacency lists.',
+    'sliding-window',
+    'Sliding Window',
+    'Contiguous subarray optimization: fixed-size rolling windows, dynamic expanding/contracting intervals, and substring frequency tracking.',
+    'Computer Science',
+    2
+  ),
+  (
+    'stacks-and-queues',
+    'Stacks & Queues',
+    'LIFO and FIFO linear structures: monotonic stacks, bracket validation, recursive call simulations, and double-ended queues.',
+    'Computer Science',
+    2
+  ),
+  (
+    'binary-search',
+    'Binary Search',
+    'Logarithmic search principles: interval halving, rotated sorted array search, upper/lower bounds, and binary search on answer space.',
+    'Computer Science',
+    2
+  ),
+  (
+    'linked-lists',
+    'Linked Lists',
+    'Non-contiguous node chains: fast/slow pointer cycle detection, in-place list reversal, dummy nodes, and merge routines.',
+    'Computer Science',
+    2
+  ),
+  (
+    'tree-traversals',
+    'Tree Traversals (DFS/BFS)',
+    'Hierarchical traversal orders: pre-order, in-order, post-order DFS recursion, and queue-driven level-order BFS explorations.',
     'Computer Science',
     3
   ),
   (
-    'dynamic-programming',
-    'Dynamic Programming',
-    'Optimization via overlapping subproblems: optimal substructure, top-down memoization, bottom-up tabulation, and state transition equations.',
+    'binary-search-trees',
+    'Binary Search Trees',
+    'Ordered tree invariant properties: valid BST validation, lowest common ancestor, node insertion, deletion, and in-order predecessor/successor.',
+    'Computer Science',
+    3
+  ),
+  (
+    'heap-priority-queue',
+    'Heaps & Priority Queues',
+    'Complete binary trees and priority extraction: min-heaps, max-heaps, top-K frequent elements, and median tracking in data streams.',
+    'Computer Science',
+    3
+  ),
+  (
+    'backtracking',
+    'Backtracking & Recursion',
+    'Exhaustive state-space tree traversal: decision trees, subsets, permutations, combination sums, constraint satisfaction, and pruning.',
+    'Computer Science',
+    3
+  ),
+  (
+    'graphs-bfs-dfs',
+    'Graph Algorithms (BFS & DFS)',
+    'Networked relationships: adjacency lists, connected components, cycle detection in directed/undirected graphs, and topological sorting.',
     'Computer Science',
     4
   ),
   (
-    'neural-networks-gradient-descent',
-    'Neural Networks & Gradient Descent',
-    'Foundations of deep learning: perceptrons, activation functions, loss landscapes, backpropagation, chain rule, and learning rates.',
-    'Artificial Intelligence',
+    'dynamic-programming-1d',
+    '1-D Dynamic Programming',
+    'Linear recurrence relations: overlapping subproblems, memoization, bottom-up state arrays, space optimization, and fibonacci-style transitions.',
+    'Computer Science',
+    4
+  ),
+  (
+    'dynamic-programming-2d',
+    '2-D Dynamic Programming',
+    'Multi-dimensional state spaces: grid traversals, longest common subsequence, edit distance, 0/1 knapsack, and partition optimization.',
+    'Computer Science',
+    5
+  ),
+  (
+    'trie-prefix-tree',
+    'Tries & Prefix Trees',
+    'N-ary retrieval trees: string prefix matching, character path transitions, autocomplete dictionaries, and wildcard pattern searching.',
+    'Computer Science',
     3
   )
 ON CONFLICT (slug) DO UPDATE
