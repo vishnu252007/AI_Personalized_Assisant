@@ -7,7 +7,9 @@
 -- Helper: Updated At Trigger Function
 -- ------------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.set_updated_at()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+SET search_path = ''
+AS $$
 BEGIN
   NEW.updated_at = timezone('utc'::text, now());
   RETURN NEW;
@@ -56,7 +58,7 @@ CREATE TABLE IF NOT EXISTS public.learner_topic_state (
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   topic_id UUID NOT NULL REFERENCES public.topics(id) ON DELETE CASCADE,
   mastery_score NUMERIC(4, 3) DEFAULT 0.500 NOT NULL CHECK (mastery_score >= 0.0 AND mastery_score <= 1.0),
-  half_life_days NUMERIC(6, 2) DEFAULT 2.00 NOT NULL CHECK (half_life_days >= 0.5),
+  half_life_days NUMERIC(6, 2) DEFAULT 2.00 NOT NULL CHECK (half_life_days >= 0.5 AND half_life_days <= 365.0),
   attempts_count INTEGER DEFAULT 0 NOT NULL,
   last_reviewed_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
   misconceptions JSONB DEFAULT '{}'::jsonb NOT NULL,
@@ -117,6 +119,24 @@ CREATE TABLE IF NOT EXISTS public.messages (
   created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+-- Trigger Function: Update conversations.updated_at on message INSERT
+CREATE OR REPLACE FUNCTION public.touch_conversation_updated_at()
+RETURNS TRIGGER
+SET search_path = ''
+AS $$
+BEGIN
+  UPDATE public.conversations
+  SET updated_at = timezone('utc'::text, now())
+  WHERE id = NEW.conversation_id;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_messages_touch_conversation ON public.messages;
+CREATE TRIGGER trigger_messages_touch_conversation
+  AFTER INSERT ON public.messages
+  FOR EACH ROW EXECUTE FUNCTION public.touch_conversation_updated_at();
+
 -- ------------------------------------------------------------------------------
 -- 7. Quizzes Table (topic_id nullable)
 -- ------------------------------------------------------------------------------
@@ -170,7 +190,7 @@ CREATE TABLE IF NOT EXISTS public.attempts (
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   selected_index INTEGER NOT NULL CHECK (selected_index BETWEEN 0 AND 3),
   is_correct BOOLEAN NOT NULL,
-  response_time_ms INTEGER DEFAULT 0,
+  response_time_ms INTEGER DEFAULT 0 NOT NULL CHECK (response_time_ms >= 0),
   created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
   CONSTRAINT unique_user_question_attempt UNIQUE (user_id, question_id)
 );
@@ -226,11 +246,11 @@ DROP POLICY IF EXISTS "Users can view own learner state" ON public.learner_topic
 CREATE POLICY "Users can view own learner state" ON public.learner_topic_state
   FOR SELECT USING (auth.uid() = user_id);
 
--- 4. Style Stats: Users manage own rows
+-- 4. Style Stats: Client SELECT-only (server writes via admin client)
 DROP POLICY IF EXISTS "Users can manage own style stats" ON public.style_stats;
-CREATE POLICY "Users can manage own style stats" ON public.style_stats
-  FOR ALL USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can view own style stats" ON public.style_stats;
+CREATE POLICY "Users can view own style stats" ON public.style_stats
+  FOR SELECT USING (auth.uid() = user_id);
 
 -- 5. Conversations: Users manage own conversations
 DROP POLICY IF EXISTS "Users can manage own conversations" ON public.conversations;
@@ -269,11 +289,11 @@ CREATE POLICY "Users can delete messages of their conversations" ON public.messa
     )
   );
 
--- 7. Quizzes: Users manage only their own quizzes
+-- 7. Quizzes: Client SELECT-only (server writes via admin client)
 DROP POLICY IF EXISTS "Users can manage own quizzes" ON public.quizzes;
-CREATE POLICY "Users can manage own quizzes" ON public.quizzes
-  FOR ALL USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can view own quizzes" ON public.quizzes;
+CREATE POLICY "Users can view own quizzes" ON public.quizzes
+  FOR SELECT USING (auth.uid() = user_id);
 
 -- 8. Questions: Users can view questions of their quizzes
 DROP POLICY IF EXISTS "Users can view questions of their quizzes" ON public.questions;
