@@ -7,6 +7,8 @@ import {
   DEFAULT_MODEL_IDS,
 } from "@/lib/env";
 import { getServerEnv, _resetServerEnvCache } from "@/lib/env.server";
+import { createClient as createBrowserClient } from "@/lib/supabase/client";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 describe("Phase 1: Environment & Test Harness", () => {
   const originalEnv = process.env;
@@ -98,6 +100,28 @@ describe("Phase 1: Environment & Test Harness", () => {
       expect(parsed.GOOGLE_GENERATIVE_AI_API_KEY).toBe("test-gemini-key");
       expect(parsed.GEMINI_MODEL).toBe("gemini-3.5-flash");
       expect(parsed.GROQ_MODEL).toBe("llama-3.3-70b-versatile");
+    });
+  });
+
+  describe("Phase 2: Supabase Clients & Core Infrastructure", () => {
+    it("instantiates browser client successfully with valid credentials", () => {
+      process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
+
+      const client = createBrowserClient();
+      expect(client).toBeDefined();
+      expect(client.auth).toBeDefined();
+    });
+
+    it("instantiates admin client with service_role key and session persistence disabled", () => {
+      process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
+      process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-key";
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = "test-gemini-key";
+
+      const admin = createAdminClient();
+      expect(admin).toBeDefined();
+      expect(admin.auth).toBeDefined();
     });
   });
 });

@@ -54,6 +54,7 @@ export interface Database {
           slug: string;
           name: string;
           description: string | null;
+          subject: string;
           domain: string;
           difficulty_level: number;
           created_at: string;
@@ -63,6 +64,7 @@ export interface Database {
           slug: string;
           name: string;
           description?: string | null;
+          subject?: string;
           domain?: string;
           difficulty_level?: number;
           created_at?: string;
@@ -72,6 +74,7 @@ export interface Database {
           slug?: string;
           name?: string;
           description?: string | null;
+          subject?: string;
           domain?: string;
           difficulty_level?: number;
           created_at?: string;

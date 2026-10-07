@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS public.topics (
   slug TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL,
   description TEXT,
+  subject TEXT DEFAULT 'Computer Science' NOT NULL,
   domain TEXT DEFAULT 'Computer Science' NOT NULL,
   difficulty_level INTEGER DEFAULT 1 CHECK (difficulty_level BETWEEN 1 AND 5),
   created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
