@@ -2,14 +2,19 @@ import "server-only";
 
 import { google } from "@ai-sdk/google";
 import { groq } from "@ai-sdk/groq";
-import { streamText, generateObject, type ModelMessage } from "ai";
+import {
+  streamText,
+  generateText,
+  APICallError,
+  Output,
+  type LanguageModel,
+} from "ai";
 import { z } from "zod";
 import { getServerEnv } from "@/lib/env.server";
 import { buildSocraticTutorPrompt } from "./prompts";
 
-/**
- * Custom Typed AI Errors per Blueprint v2 Section 3.6.
- */
+// ── Custom errors ──────────────────────────────────────────────────────────────
+
 export class RateLimitError extends Error {
   constructor(message: string, public readonly provider: string) {
     super(message);
@@ -25,16 +30,24 @@ export class TimeoutError extends Error {
 }
 
 export class ProviderError extends Error {
-  constructor(message: string, public readonly provider: string, public readonly cause?: unknown) {
+  constructor(
+    message: string,
+    public readonly provider: string,
+    public readonly cause?: unknown
+  ) {
     super(message);
     this.name = "ProviderError";
   }
 }
 
+// ── Types ──────────────────────────────────────────────────────────────────────
+
 export type TutorMessage = {
   role: "user" | "assistant" | "system";
   content: string;
 };
+
+export type TutorStreamResult = ReturnType<typeof streamText>;
 
 export interface AIProviderInterface {
   streamTutor(
@@ -42,7 +55,7 @@ export interface AIProviderInterface {
     profileContext: string,
     style?: string,
     onFinish?: (event: { text: string }) => Promise<void> | void
-  ): Promise<ReturnType<typeof streamText>>;
+  ): Promise<TutorStreamResult>;
 
   generateStructured<T>(
     prompt: string,
@@ -51,34 +64,70 @@ export interface AIProviderInterface {
   ): Promise<T>;
 }
 
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+
 /**
- * Utility to retry an async operation with exponential backoff.
+ * Creates an AbortSignal that fires after `ms` milliseconds.
  */
-async function withRetry<T>(
-  fn: () => Promise<T>,
-  retries: number = 3,
-  delayMs: number = 1000
-): Promise<T> {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await fn();
-    } catch (err: unknown) {
-      attempt++;
-      if (attempt >= retries) {
-        throw err;
-      }
-      const backoff = delayMs * Math.pow(2, attempt - 1);
-      await new Promise((resolve) => setTimeout(resolve, backoff));
+function timeoutSignal(ms: number = DEFAULT_TIMEOUT_MS): AbortSignal {
+  return AbortSignal.timeout(ms);
+}
+
+/**
+ * Classifies an error as rate-limit (429), timeout, or generic provider error.
+ */
+export function classifyAndThrow(err: unknown, provider: string): never {
+  // AbortSignal.timeout throws a DOMException / TimeoutError
+  if (
+    err instanceof DOMException &&
+    err.name === "TimeoutError"
+  ) {
+    throw new TimeoutError(`${provider} request timed out`, provider);
+  }
+
+  if (err instanceof APICallError) {
+    if (err.statusCode === 429) {
+      throw new RateLimitError(`${provider} rate limit exceeded (429)`, provider);
+    }
+    if (err.statusCode !== undefined && err.statusCode >= 500) {
+      throw new ProviderError(`${provider} server error (${err.statusCode})`, provider, err);
+    }
+  }
+
+  // String-based detection for non-APICallError or wrapped error messages
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes("429")) {
+    throw new RateLimitError(`${provider} rate limit exceeded`, provider);
+  }
+
+  throw new ProviderError(`${provider} provider error`, provider, err);
+}
+
+/**
+ * Peek-validates a stream by consuming the very first chunk.
+ * If the first chunk fails (provider error / empty stream), the error propagates
+ * immediately so the caller can switch to the fallback.
+ */
+export async function peekFirstChunk(result: TutorStreamResult): Promise<void> {
+  for await (const part of result.fullStream) {
+    if (part.type === "error") {
+      throw part.error;
+    }
+    if (part.type === "text-delta" || part.type === "finish") {
+      return;
     }
   }
 }
 
-/**
- * Primary Cloud Provider using Google Gemini.
- */
+// ── CloudProvider ──────────────────────────────────────────────────────────────
+
 export class CloudProvider implements AIProviderInterface {
+  constructor(private customModel?: LanguageModel) {}
+
   private getModel() {
+    if (this.customModel) return this.customModel;
     const env = getServerEnv();
     return google(env.GEMINI_MODEL);
   }
@@ -88,15 +137,23 @@ export class CloudProvider implements AIProviderInterface {
     profileContext: string,
     style: string = "analogy",
     onFinish?: (event: { text: string }) => Promise<void> | void
-  ): Promise<ReturnType<typeof streamText>> {
+  ): Promise<TutorStreamResult> {
     const system = buildSocraticTutorPrompt(profileContext, style);
-    return streamText({
+    const result = streamText({
       model: this.getModel(),
       system,
-      messages: messages as unknown as ModelMessage[],
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
       temperature: 0.7,
-      onFinish: onFinish ? async (event) => { await onFinish({ text: event.text }); } : undefined,
+      maxRetries: 0,
+      abortSignal: timeoutSignal(),
+      onFinish: onFinish
+        ? async (event) => {
+            await onFinish({ text: event.text });
+          }
+        : undefined,
     });
+
+    return result;
   }
 
   async generateStructured<T>(
@@ -104,32 +161,42 @@ export class CloudProvider implements AIProviderInterface {
     schema: z.ZodType<T, z.ZodTypeDef, unknown>,
     systemPrompt?: string
   ): Promise<T> {
-    const { object } = await generateObject({
+    const { output } = await generateText({
       model: this.getModel(),
       system: systemPrompt,
       prompt,
-      schema: schema as unknown as z.ZodType<T>,
       temperature: 0.2,
+      maxRetries: 0,
+      abortSignal: timeoutSignal(),
+      output: Output.object({
+        schema,
+      }),
     });
-    return object as T;
+
+    return output as T;
   }
 }
 
-/**
- * Fallback Provider: tries Gemini first, falls back to Groq on rate limit or provider error.
- * Includes exponential backoff with up to 3 automatic retries.
- */
+// ── FallbackProvider ───────────────────────────────────────────────────────────
+
 export class FallbackProvider implements AIProviderInterface {
   private primary: CloudProvider;
 
-  constructor() {
-    this.primary = new CloudProvider();
+  constructor(
+    primaryModel?: LanguageModel,
+    private fallbackModel?: LanguageModel
+  ) {
+    this.primary = new CloudProvider(primaryModel);
   }
 
   private getGroqModel() {
+    if (this.fallbackModel) return this.fallbackModel;
     const env = getServerEnv();
     if (!env.GROQ_API_KEY) {
-      throw new ProviderError("Groq fallback invoked but GROQ_API_KEY is not configured", "groq");
+      throw new ProviderError(
+        "Groq fallback invoked but GROQ_API_KEY is not configured",
+        "groq"
+      );
     }
     return groq(env.GROQ_MODEL);
   }
@@ -139,33 +206,61 @@ export class FallbackProvider implements AIProviderInterface {
     profileContext: string,
     style: string = "analogy",
     onFinish?: (event: { text: string }) => Promise<void> | void
-  ): Promise<ReturnType<typeof streamText>> {
+  ): Promise<TutorStreamResult> {
     try {
-      return await withRetry(() => this.primary.streamTutor(messages, profileContext, style, onFinish), 2);
-    } catch (primaryErr: unknown) {
-      const err = primaryErr as { message?: string; status?: number };
-      const isRateLimit = err?.message?.includes("429") || err?.status === 429;
-      const env = getServerEnv();
+      const result = await this.primary.streamTutor(
+        messages,
+        profileContext,
+        style,
+        onFinish
+      );
 
-      if (env.GROQ_API_KEY) {
+      // Peek-validate: consume first chunk to verify the stream is alive.
+      await peekFirstChunk(result);
+      return result;
+    } catch (primaryErr: unknown) {
+      // Classify and wrap the primary error
+      let classified: Error;
+      try {
+        classifyAndThrow(primaryErr, "gemini");
+      } catch (e) {
+        classified = e as Error;
+      }
+
+      const env = getServerEnv();
+      if (this.fallbackModel || env.GROQ_API_KEY) {
         try {
           const system = buildSocraticTutorPrompt(profileContext, style);
-          return await streamText({
+          const result = streamText({
             model: this.getGroqModel(),
             system,
-            messages: messages as unknown as ModelMessage[],
+            messages: messages.map((m) => ({
+              role: m.role,
+              content: m.content,
+            })),
             temperature: 0.7,
-            onFinish: onFinish ? async (event) => { await onFinish({ text: event.text }); } : undefined,
+            maxRetries: 0,
+            abortSignal: timeoutSignal(),
+            onFinish: onFinish
+              ? async (event) => {
+                  await onFinish({ text: event.text });
+                }
+              : undefined,
           });
+
+          // Peek-validate fallback stream too
+          await peekFirstChunk(result);
+          return result;
         } catch (fallbackErr: unknown) {
-          throw new ProviderError("Both primary and fallback AI providers failed streamTutor", "fallback", fallbackErr);
+          throw new ProviderError(
+            "Both primary and fallback AI providers failed streamTutor",
+            "fallback",
+            fallbackErr
+          );
         }
       }
 
-      if (isRateLimit) {
-        throw new RateLimitError("Gemini rate limit exceeded and no Groq fallback available", "gemini");
-      }
-      throw new ProviderError("Primary AI provider failed streamTutor", "gemini", primaryErr);
+      throw classified!;
     }
   }
 
@@ -175,34 +270,46 @@ export class FallbackProvider implements AIProviderInterface {
     systemPrompt?: string
   ): Promise<T> {
     try {
-      return await withRetry(() => this.primary.generateStructured(prompt, schema, systemPrompt), 2);
+      return await this.primary.generateStructured(prompt, schema, systemPrompt);
     } catch (primaryErr: unknown) {
-      const err = primaryErr as { message?: string; status?: number };
-      const isRateLimit = err?.message?.includes("429") || err?.status === 429;
-      const env = getServerEnv();
+      let classified: Error;
+      try {
+        classifyAndThrow(primaryErr, "gemini");
+      } catch (e) {
+        classified = e as Error;
+      }
 
-      if (env.GROQ_API_KEY) {
+      const env = getServerEnv();
+      if (this.fallbackModel || env.GROQ_API_KEY) {
         try {
-          const { object } = await generateObject({
+          const { output } = await generateText({
             model: this.getGroqModel(),
             system: systemPrompt,
             prompt,
-            schema: schema as unknown as z.ZodType<T>,
             temperature: 0.2,
+            maxRetries: 0,
+            abortSignal: timeoutSignal(),
+            output: Output.object({
+              schema,
+            }),
           });
-          return object as T;
+
+          return output as T;
         } catch (fallbackErr: unknown) {
-          throw new ProviderError("Both primary and fallback AI providers failed generateStructured", "fallback", fallbackErr);
+          throw new ProviderError(
+            "Both primary and fallback AI providers failed generateStructured",
+            "fallback",
+            fallbackErr
+          );
         }
       }
 
-      if (isRateLimit) {
-        throw new RateLimitError("Gemini rate limit exceeded and no Groq fallback available", "gemini");
-      }
-      throw new ProviderError("Primary AI provider failed generateStructured", "gemini", primaryErr);
+      throw classified!;
     }
   }
 }
+
+// ── Singleton ──────────────────────────────────────────────────────────────────
 
 let activeProvider: AIProviderInterface | null = null;
 
@@ -211,4 +318,11 @@ export function getProvider(): AIProviderInterface {
     activeProvider = new FallbackProvider();
   }
   return activeProvider;
+}
+
+/**
+ * Test helper: replace the active provider with a mock.
+ */
+export function _setProvider(provider: AIProviderInterface | null): void {
+  activeProvider = provider;
 }

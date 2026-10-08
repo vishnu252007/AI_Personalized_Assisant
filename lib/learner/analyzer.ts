@@ -25,7 +25,7 @@ export interface AnalyzeConversationInput {
  * Designed to run in after() background handler.
  */
 export async function analyzeConversationTurn(input: AnalyzeConversationInput): Promise<AnalyzerOutput | null> {
-  const { userId, turns, subject = "Computer Science" } = input;
+  const { userId, conversationId, turns } = input;
   if (!turns || turns.length === 0) return null;
 
   try {
@@ -40,7 +40,7 @@ export async function analyzeConversationTurn(input: AnalyzeConversationInput): 
     );
 
     // Canonicalize topic strictly from curated list
-    const canonicalSlug = canonicalizeTopicSlug(result.topicSlug, subject);
+    const canonicalSlug = canonicalizeTopicSlug(result.topicSlug);
     if (canonicalSlug === "other") {
       return result;
     }
@@ -86,17 +86,29 @@ export async function analyzeConversationTurn(input: AnalyzeConversationInput): 
       }
     }
 
-    // 5. Upsert learner_topic_state
-    await admin.from("learner_topic_state").upsert(
-      {
+    // 5. Update learner_topic_state without modifying last_reviewed_at on chat
+    if (existingState) {
+      await admin
+        .from("learner_topic_state")
+        .update({
+          mastery_score: newMastery,
+          misconceptions: updatedMisconceptions,
+        })
+        .eq("id", existingState.id);
+    } else {
+      await admin.from("learner_topic_state").insert({
         user_id: userId,
         topic_id: topic.id,
         mastery_score: newMastery,
-        last_reviewed_at: new Date().toISOString(),
         misconceptions: updatedMisconceptions,
-      },
-      { onConflict: "user_id,topic_id" }
-    );
+      });
+    }
+
+    // 6. Record topic on the conversation for pedagogical style attribution
+    await admin
+      .from("conversations")
+      .update({ topic_id: topic.id })
+      .eq("id", conversationId);
 
     return result;
   } catch (error) {

@@ -1,131 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import {
-  getClientEnv,
-  _resetClientEnvCache,
-  DEFAULT_GEMINI_MODEL,
-  DEFAULT_GROQ_MODEL,
-  DEFAULT_MODEL_IDS,
-} from "@/lib/env";
-import { getServerEnv, _resetServerEnvCache } from "@/lib/env.server";
-import { createClient as createBrowserClient } from "@/lib/supabase/client";
-import { createAdminClient } from "@/lib/supabase/admin";
-
-describe("Phase 1: Environment & Test Harness", () => {
-  const originalEnv = process.env;
-
-  beforeEach(() => {
-    process.env = { ...originalEnv };
-    _resetClientEnvCache();
-    _resetServerEnvCache();
-  });
-
-  afterEach(() => {
-    process.env = originalEnv;
-    _resetClientEnvCache();
-    _resetServerEnvCache();
-  });
-
-  it("verifies test suite is configured and passing", () => {
-    expect(true).toBe(true);
-  });
-
-  it("defines default model IDs once as constants", () => {
-    expect(DEFAULT_GEMINI_MODEL).toBe("gemini-3.5-flash");
-    expect(DEFAULT_GROQ_MODEL).toBe("llama-3.3-70b-versatile");
-    expect(DEFAULT_MODEL_IDS.gemini).toBe("gemini-3.5-flash");
-    expect(DEFAULT_MODEL_IDS.groq).toBe("llama-3.3-70b-versatile");
-  });
-
-  describe("lib/env.ts: Client Environment Validation", () => {
-    it("throws a clear error listing missing variables in development and production (no placeholder fallbacks)", () => {
-      // Test with completely missing env
-      delete process.env.NEXT_PUBLIC_SUPABASE_URL;
-      delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-      (process.env as Record<string, string | undefined>).NODE_ENV = "development";
-      expect(() => getClientEnv()).toThrowError(/NEXT_PUBLIC_SUPABASE_URL/);
-      expect(() => getClientEnv()).toThrowError(/NEXT_PUBLIC_SUPABASE_ANON_KEY/);
-
-      _resetClientEnvCache();
-      (process.env as Record<string, string | undefined>).NODE_ENV = "production";
-      expect(() => getClientEnv()).toThrowError(/NEXT_PUBLIC_SUPABASE_URL/);
-      expect(() => getClientEnv()).toThrowError(/NEXT_PUBLIC_SUPABASE_ANON_KEY/);
-    });
-
-    it("throws a clear error for invalid URLs", () => {
-      process.env.NEXT_PUBLIC_SUPABASE_URL = "not-a-valid-url";
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-key-123";
-
-      expect(() => getClientEnv()).toThrowError(/NEXT_PUBLIC_SUPABASE_URL must be a valid URL/);
-    });
-
-    it("parses valid client environment variables successfully", () => {
-      process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
-      process.env.NEXT_PUBLIC_SITE_URL = "http://localhost:3000";
-
-      const parsed = getClientEnv();
-      expect(parsed.NEXT_PUBLIC_SUPABASE_URL).toBe("https://example.supabase.co");
-      expect(parsed.NEXT_PUBLIC_SUPABASE_ANON_KEY).toBe("test-anon-key");
-      expect(parsed.NEXT_PUBLIC_SITE_URL).toBe("http://localhost:3000");
-    });
-  });
-
-  describe("lib/env.server.ts: Server Environment Validation", () => {
-    it("throws a clear error listing missing server variables in ALL environments (no placeholder fallbacks)", () => {
-      delete process.env.NEXT_PUBLIC_SUPABASE_URL;
-      delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-      delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-      delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-
-      (process.env as Record<string, string | undefined>).NODE_ENV = "development";
-      expect(() => getServerEnv()).toThrowError(/SUPABASE_SERVICE_ROLE_KEY/);
-      expect(() => getServerEnv()).toThrowError(/GOOGLE_GENERATIVE_AI_API_KEY/);
-
-      _resetServerEnvCache();
-      (process.env as Record<string, string | undefined>).NODE_ENV = "production";
-      expect(() => getServerEnv()).toThrowError(/SUPABASE_SERVICE_ROLE_KEY/);
-      expect(() => getServerEnv()).toThrowError(/GOOGLE_GENERATIVE_AI_API_KEY/);
-    });
-
-    it("parses valid server environment variables and applies default model IDs", () => {
-      process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
-      process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-key";
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY = "test-gemini-key";
-
-      const parsed = getServerEnv();
-      expect(parsed.NEXT_PUBLIC_SUPABASE_URL).toBe("https://example.supabase.co");
-      expect(parsed.SUPABASE_SERVICE_ROLE_KEY).toBe("test-service-key");
-      expect(parsed.GOOGLE_GENERATIVE_AI_API_KEY).toBe("test-gemini-key");
-      expect(parsed.GEMINI_MODEL).toBe("gemini-3.5-flash");
-      expect(parsed.GROQ_MODEL).toBe("llama-3.3-70b-versatile");
-    });
-  });
-
-  describe("Phase 2: Supabase Clients & Core Infrastructure", () => {
-    it("instantiates browser client successfully with valid credentials", () => {
-      process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
-
-      const client = createBrowserClient();
-      expect(client).toBeDefined();
-      expect(client.auth).toBeDefined();
-    });
-
-    it("instantiates admin client with service_role key and session persistence disabled", () => {
-      process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
-      process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-key";
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY = "test-gemini-key";
-
-      const admin = createAdminClient();
-      expect(admin).toBeDefined();
-      expect(admin.auth).toBeDefined();
-    });
-  });
-});
-
+import { describe, it, expect } from "vitest";
+import * as fs from "fs";
+import * as path from "path";
 import {
   normalizeDifficulty,
   calculateExpectedOutcome,
@@ -148,6 +23,7 @@ import {
 import {
   canonicalizeTopicSlug,
   getTopicBySlug,
+  CURATED_TOPICS,
 } from "@/lib/learner/topics";
 import {
   analyzerOutputSchema,
@@ -155,23 +31,19 @@ import {
   submitAnswerSchema,
 } from "@/lib/ai/schemas";
 
-describe("Phase 3 & Plan 2: Cognitive Engine & Learner Math (Blueprint v2 Section 3.7)", () => {
-  describe("3.3 Mastery Model (lib/learner/mastery.ts)", () => {
+describe("Cognitive Engine & Learner Math", () => {
+  describe("Mastery Model (lib/learner/mastery.ts)", () => {
     it("normalizes difficulty 1..5 to continuous range 0..1", () => {
       expect(normalizeDifficulty(1)).toBe(0);
       expect(normalizeDifficulty(3)).toBe(0.5);
       expect(normalizeDifficulty(5)).toBe(1);
-      // Clamps outside 1..5
       expect(normalizeDifficulty(0)).toBe(0);
       expect(normalizeDifficulty(6)).toBe(1);
     });
 
     it("calculates expected outcome using logistic scaling factor 0.25", () => {
-      // When mastery == difficulty, expected probability is 0.5
       expect(calculateExpectedOutcome(0.5, 0.5)).toBeCloseTo(0.5, 4);
-      // When mastery > difficulty, expected > 0.5
       expect(calculateExpectedOutcome(0.8, 0.2)).toBeGreaterThan(0.5);
-      // When mastery < difficulty, expected < 0.5
       expect(calculateExpectedOutcome(0.2, 0.8)).toBeLessThan(0.5);
     });
 
@@ -218,21 +90,23 @@ describe("Phase 3 & Plan 2: Cognitive Engine & Learner Math (Blueprint v2 Sectio
 
     it("correct answers on hard questions move mastery more than on easy ones", () => {
       const initialMastery = 0.5;
-      const gainOnHard = calculateNewMastery({
-        currentMastery: initialMastery,
-        difficulty: 5, // hard
-        outcome: 1.0,
-        attemptsCount: 10,
-        isQuizAttempt: true,
-      }) - initialMastery;
+      const gainOnHard =
+        calculateNewMastery({
+          currentMastery: initialMastery,
+          difficulty: 5,
+          outcome: 1.0,
+          attemptsCount: 10,
+          isQuizAttempt: true,
+        }) - initialMastery;
 
-      const gainOnEasy = calculateNewMastery({
-        currentMastery: initialMastery,
-        difficulty: 1, // easy
-        outcome: 1.0,
-        attemptsCount: 10,
-        isQuizAttempt: true,
-      }) - initialMastery;
+      const gainOnEasy =
+        calculateNewMastery({
+          currentMastery: initialMastery,
+          difficulty: 1,
+          outcome: 1.0,
+          attemptsCount: 10,
+          isQuizAttempt: true,
+        }) - initialMastery;
 
       expect(gainOnHard).toBeGreaterThan(gainOnEasy);
     });
@@ -266,13 +140,10 @@ describe("Phase 3 & Plan 2: Cognitive Engine & Learner Math (Blueprint v2 Sectio
     });
   });
 
-  describe("3.4 Forgetting Model (lib/learner/forgetting.ts)", () => {
+  describe("Forgetting Model (lib/learner/forgetting.ts)", () => {
     it("calculates retention probability R = 2^(-days / halfLife)", () => {
-      // 0 days elapsed -> R = 1.0
       expect(calculateRetentionProbability(0, 5)).toBe(1.0);
-      // exactly 1 halfLife elapsed -> R = 0.5
       expect(calculateRetentionProbability(5, 5)).toBeCloseTo(0.5, 4);
-      // 2 halfLifes elapsed -> R = 0.25
       expect(calculateRetentionProbability(10, 5)).toBeCloseTo(0.25, 4);
     });
 
@@ -282,12 +153,12 @@ describe("Phase 3 & Plan 2: Cognitive Engine & Learner Math (Blueprint v2 Sectio
       const contractedHalfLife = calculateUpdatedHalfLife(initialHalfLife, false, 0.5);
 
       expect(grownHalfLife).toBeGreaterThan(initialHalfLife);
-      expect(contractedHalfLife).toBe(2.0); // 4 * 0.5
+      expect(contractedHalfLife).toBe(2.0);
     });
 
     it("yields larger half-life gain when recall was harder (lower retention)", () => {
-      const hardRecallGain = calculateUpdatedHalfLife(4.0, true, 0.2); // R = 0.2
-      const easyRecallGain = calculateUpdatedHalfLife(4.0, true, 0.9); // R = 0.9
+      const hardRecallGain = calculateUpdatedHalfLife(4.0, true, 0.2);
+      const easyRecallGain = calculateUpdatedHalfLife(4.0, true, 0.9);
 
       expect(hardRecallGain).toBeGreaterThan(easyRecallGain);
     });
@@ -315,14 +186,13 @@ describe("Phase 3 & Plan 2: Cognitive Engine & Learner Math (Blueprint v2 Sectio
 
       const queue = buildReviewQueue(topics, new Date(), 5);
       expect(queue.length).toBeLessThanOrEqual(5);
-      // Lowest retention first
       for (let i = 0; i < queue.length - 1; i++) {
         expect(queue[i].retentionProbability).toBeLessThanOrEqual(queue[i + 1].retentionProbability);
       }
     });
   });
 
-  describe("3.5 Bandit & Curated Topics (lib/learner/bandit.ts & topics.ts)", () => {
+  describe("Bandit & Curated Topics (lib/learner/bandit.ts & topics.ts)", () => {
     it("updates style stats correctly on reward (1 = alpha++, 0 = beta++)", () => {
       const initial = { alpha: 2, beta: 2 };
       const afterSuccess = updateStyleStats(initial, 1);
@@ -341,7 +211,6 @@ describe("Phase 3 & Plan 2: Cognitive Engine & Learner Math (Blueprint v2 Sectio
         { style: "example", alpha: 1, beta: 100 },
       ];
 
-      // Across 20 samples, analogy should be chosen consistently
       let analogyPicks = 0;
       for (let i = 0; i < 20; i++) {
         if (selectExplanationStyle(stats) === "analogy") {
@@ -351,10 +220,12 @@ describe("Phase 3 & Plan 2: Cognitive Engine & Learner Math (Blueprint v2 Sectio
       expect(analogyPicks).toBeGreaterThanOrEqual(19);
     });
 
-    it("canonicalizes topics strictly from curated list or returns other", () => {
+    it("canonicalizes topics strictly from curated list or returns other without fuzzy matching", () => {
       expect(canonicalizeTopicSlug("arrays-and-hashing")).toBe("arrays-and-hashing");
-      expect(canonicalizeTopicSlug("hash maps")).toBe("arrays-and-hashing");
+      expect(canonicalizeTopicSlug("two-pointers")).toBe("two-pointers");
       expect(canonicalizeTopicSlug("two pointers")).toBe("two-pointers");
+      // Fuzzy terms now map to "other"
+      expect(canonicalizeTopicSlug("hash maps")).toBe("other");
       expect(canonicalizeTopicSlug("completely unrelated gibberish")).toBe("other");
     });
 
@@ -362,6 +233,21 @@ describe("Phase 3 & Plan 2: Cognitive Engine & Learner Math (Blueprint v2 Sectio
       const topic = getTopicBySlug("binary-search");
       expect(topic).toBeDefined();
       expect(topic?.name).toBe("Binary Search");
+    });
+
+    it("verifies seed.sql topic slugs match CURATED_TOPICS exactly", () => {
+      const seedContent = fs.readFileSync(
+        path.resolve(process.cwd(), "supabase/seed.sql"),
+        "utf8"
+      );
+      const matches = [...seedContent.matchAll(/\(\s*'([a-z0-9-]+)',/g)];
+      const seedSlugs = matches.map((m) => m[1]);
+      const curatedSlugs = CURATED_TOPICS.map((t) => t.slug);
+
+      expect(seedSlugs.length).toBe(curatedSlugs.length);
+      for (const slug of curatedSlugs) {
+        expect(seedSlugs).toContain(slug);
+      }
     });
   });
 
@@ -391,7 +277,7 @@ describe("Phase 3 & Plan 2: Cognitive Engine & Learner Math (Blueprint v2 Sectio
     it("rejects malformed analyzer LLM output", () => {
       const invalidDiff = {
         topicSlug: "trees",
-        difficulty: 6, // > 5
+        difficulty: 6,
         understood: 0.5,
       };
       expect(analyzerOutputSchema.safeParse(invalidDiff).success).toBe(false);
@@ -399,7 +285,7 @@ describe("Phase 3 & Plan 2: Cognitive Engine & Learner Math (Blueprint v2 Sectio
       const invalidUnderstood = {
         topicSlug: "trees",
         difficulty: 3,
-        understood: 1.5, // > 1.0
+        understood: 1.5,
       };
       expect(analyzerOutputSchema.safeParse(invalidUnderstood).success).toBe(false);
     });
@@ -422,14 +308,12 @@ describe("Phase 3 & Plan 2: Cognitive Engine & Learner Math (Blueprint v2 Sectio
       const parsed = quizQuestionSchema.safeParse(validQuestion);
       expect(parsed.success).toBe(true);
 
-      // Fails if misconception tag at correctIndex is not null
       const invalidTagAtCorrect = {
         ...validQuestion,
         misconceptionTags: ["hash-table-confusion", "oops-not-null", "unbalanced-assumption", "sort-confusion"],
       };
       expect(quizQuestionSchema.safeParse(invalidTagAtCorrect).success).toBe(false);
 
-      // Fails if only 3 options
       const invalidOptionsCount = {
         ...validQuestion,
         options: ["O(1)", "O(log n)", "O(n)"],

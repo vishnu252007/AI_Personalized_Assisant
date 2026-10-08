@@ -1,39 +1,74 @@
-import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { submitAnswerSchema } from "@/lib/ai/schemas";
 import { calculateNewMastery, calculateResponseOutcome } from "@/lib/learner/mastery";
 import { calculateRetentionProbability, calculateUpdatedHalfLife } from "@/lib/learner/forgetting";
 import { updateStyleStats } from "@/lib/learner/bandit";
+import { requireUser, apiError } from "@/lib/api-helpers";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized", code: "UNAUTHORIZED" },
-        { status: 401 }
-      );
-    }
+    const auth = await requireUser();
+    if (auth.error) return auth.error;
+    const user = auth.user;
 
     const body = await request.json().catch(() => ({}));
     const parsed = submitAnswerSchema.safeParse(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        { error: "Invalid submission payload", code: "VALIDATION_ERROR", details: parsed.error.flatten() },
-        { status: 400 }
+      return apiError(
+        "Invalid submission payload",
+        "VALIDATION_ERROR",
+        400,
+        parsed.error.flatten()
       );
     }
 
     const { quizId, questionId, chosenIndex, timeMs } = parsed.data;
     const admin = createAdminClient();
+
+    // Try calling atomic PostgreSQL RPC function with row locks first
+    try {
+      const { data: rpcResult, error: rpcErr } = await admin.rpc(
+        "submit_quiz_answer" as never,
+        {
+          p_user_id: user.id,
+          p_quiz_id: quizId,
+          p_question_id: questionId,
+          p_chosen_index: chosenIndex,
+          p_time_ms: timeMs,
+        } as never
+      );
+
+      if (!rpcErr && rpcResult) {
+        return Response.json(rpcResult);
+      }
+
+      if (rpcErr) {
+        if (rpcErr.message?.includes("DUPLICATE_SUBMISSION")) {
+          return apiError(
+            "Duplicate answer submission: question has already been answered",
+            "DUPLICATE_SUBMISSION",
+            409
+          );
+        }
+        if (rpcErr.message?.includes("QUIZ_INACTIVE")) {
+          return apiError(
+            "Quiz is already completed or inactive",
+            "QUIZ_INACTIVE",
+            400
+          );
+        }
+        if (rpcErr.message?.includes("QUIZ_NOT_FOUND")) {
+          return apiError("Quiz not found or unauthorized", "NOT_FOUND", 404);
+        }
+        if (rpcErr.message?.includes("QUESTION_NOT_FOUND")) {
+          return apiError("Question not found in this quiz", "NOT_FOUND", 404);
+        }
+      }
+    } catch {
+      // Fallback to transactional TS flow if RPC is not present in target DB
+    }
 
     // 1. Verify quiz ownership and in_progress status
     const { data: quiz, error: quizError } = await admin
@@ -44,20 +79,34 @@ export async function POST(request: Request) {
       .single();
 
     if (quizError || !quiz) {
-      return NextResponse.json(
-        { error: "Quiz not found or unauthorized", code: "NOT_FOUND" },
-        { status: 404 }
-      );
+      return apiError("Quiz not found or unauthorized", "NOT_FOUND", 404);
     }
 
     if (quiz.status !== "in_progress") {
-      return NextResponse.json(
-        { error: "Quiz is already completed or inactive", code: "QUIZ_INACTIVE" },
-        { status: 400 }
+      return apiError(
+        "Quiz is already completed or inactive",
+        "QUIZ_INACTIVE",
+        400
       );
     }
 
-    // 2. Prevent duplicate answer submission (Acceptance Check: Duplicate answer submission is rejected)
+    // 2. Verify question belongs to this quiz
+    const { data: question, error: questionErr } = await admin
+      .from("questions")
+      .select("id, difficulty, topic_id, quiz_id")
+      .eq("id", questionId)
+      .eq("quiz_id", quizId)
+      .single();
+
+    if (questionErr || !question) {
+      return apiError(
+        "Question not found in this quiz",
+        "NOT_FOUND",
+        404
+      );
+    }
+
+    // 3. Prevent duplicate answer submission
     const { data: existingAttempt } = await admin
       .from("attempts")
       .select("id")
@@ -66,35 +115,39 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (existingAttempt) {
-      return NextResponse.json(
-        { error: "Duplicate answer submission: question has already been answered", code: "DUPLICATE_SUBMISSION" },
-        { status: 409 }
+      return apiError(
+        "Duplicate answer submission: question has already been answered",
+        "DUPLICATE_SUBMISSION",
+        409
       );
     }
 
-    // 3. Fetch server-side question key and question metadata
-    const [keyRes, questionRes] = await Promise.all([
-      admin.from("question_keys").select("correct_index, rationales, misconception_tags").eq("question_id", questionId).single(),
-      admin.from("questions").select("difficulty, topic_id").eq("id", questionId).single(),
-    ]);
+    // 4. Fetch server-side question key
+    const { data: keyData, error: keyErr } = await admin
+      .from("question_keys")
+      .select("correct_index, rationales, misconception_tags")
+      .eq("question_id", questionId)
+      .single();
 
-    if (!keyRes.data || !questionRes.data) {
-      return NextResponse.json(
-        { error: "Question evaluation metadata not found", code: "NOT_FOUND" },
-        { status: 404 }
+    if (keyErr || !keyData) {
+      return apiError(
+        "Question evaluation metadata not found",
+        "NOT_FOUND",
+        404
       );
     }
 
-    const correctIndex = keyRes.data.correct_index;
-    const rationales = keyRes.data.rationales as string[];
-    const misconceptionTags = keyRes.data.misconception_tags as (string | null)[];
-    const difficulty = questionRes.data.difficulty;
-    const topicId = questionRes.data.topic_id || quiz.topic_id;
+    const correctIndex = keyData.correct_index;
+    const rationales = keyData.rationales as string[];
+    const misconceptionTags = keyData.misconception_tags as (string | null)[];
+    const difficulty = question.difficulty;
+    const topicId = question.topic_id || quiz.topic_id;
 
     const isCorrect = chosenIndex === correctIndex;
-    const explanation = rationales[chosenIndex] || "No explanation provided.";
+    const chosenExplanation = rationales[chosenIndex] || "No explanation provided.";
+    const correctExplanation = rationales[correctIndex] || "No explanation provided.";
 
-    // 4. Log attempt record in database
+    // 5. Log attempt and update quiz score
     const { error: attemptInsertError } = await admin.from("attempts").insert({
       quiz_id: quizId,
       question_id: questionId,
@@ -105,13 +158,9 @@ export async function POST(request: Request) {
     });
 
     if (attemptInsertError) {
-      return NextResponse.json(
-        { error: "Failed to record attempt", code: "DATABASE_ERROR" },
-        { status: 500 }
-      );
+      return apiError("Failed to record attempt", "DATABASE_ERROR", 500);
     }
 
-    // 5. Update quiz score if correct
     if (isCorrect) {
       await admin
         .from("quizzes")
@@ -119,11 +168,13 @@ export async function POST(request: Request) {
         .eq("id", quizId);
     }
 
-    // 6. Recalibrate learner state (Elo mastery and retention half-life) if topic is attached
+    // 6. Recalibrate learner state (Elo mastery and retention half-life)
     if (topicId) {
       const { data: state } = await admin
         .from("learner_topic_state")
-        .select("id, mastery_score, half_life_days, attempts_count, last_reviewed_at, misconceptions")
+        .select(
+          "id, mastery_score, half_life_days, attempts_count, last_reviewed_at, misconceptions"
+        )
         .eq("user_id", user.id)
         .eq("topic_id", topicId)
         .maybeSingle();
@@ -131,12 +182,11 @@ export async function POST(request: Request) {
       const currentMastery = state ? Number(state.mastery_score) : 0.5;
       const currentHalfLife = state ? Number(state.half_life_days) : 2.0;
       const attemptsCount = state ? state.attempts_count : 0;
-      const misconceptionsMap = (state?.misconceptions as Record<string, number>) || {};
+      const misconceptionsMap =
+        (state?.misconceptions as Record<string, number>) || {};
 
-      // Latency-weighted outcome (slow correct answer -> 0.8)
       const outcome = calculateResponseOutcome(isCorrect, timeMs);
 
-      // Elo mastery update (K_base = 0.15 for verified quiz attempt)
       const newMastery = calculateNewMastery({
         currentMastery,
         difficulty,
@@ -145,24 +195,33 @@ export async function POST(request: Request) {
         isQuizAttempt: true,
       });
 
-      // Half-life update
-      const diffMs = state ? Math.max(0, Date.now() - new Date(state.last_reviewed_at).getTime()) : 0;
+      const diffMs = state
+        ? Math.max(0, Date.now() - new Date(state.last_reviewed_at).getTime())
+        : 0;
       const daysSince = diffMs / (1000 * 60 * 60 * 24);
       const currentR = calculateRetentionProbability(daysSince, currentHalfLife);
-      const newHalfLife = calculateUpdatedHalfLife(currentHalfLife, isCorrect, currentR);
+      const newHalfLife = calculateUpdatedHalfLife(
+        currentHalfLife,
+        isCorrect,
+        currentR
+      );
 
-      // Misconception tracking: wrong option carries misconception tag
+      // Misconception tracking
       const updatedMisconceptions = { ...misconceptionsMap };
       if (!isCorrect) {
         const tag = misconceptionTags[chosenIndex];
         if (tag) {
-          updatedMisconceptions[tag] = (updatedMisconceptions[tag] || 0) + 1;
+          updatedMisconceptions[tag] =
+            (updatedMisconceptions[tag] || 0) + 1;
         }
       } else {
         // Slow decay on correct answer
         for (const tag of Object.keys(updatedMisconceptions)) {
           if (updatedMisconceptions[tag] > 0) {
-            updatedMisconceptions[tag] = Math.max(0, updatedMisconceptions[tag] - 1);
+            updatedMisconceptions[tag] = Math.max(
+              0,
+              updatedMisconceptions[tag] - 1
+            );
           }
         }
       }
@@ -181,24 +240,74 @@ export async function POST(request: Request) {
       );
     }
 
-    // 7. Update explanation bandit reward (1 if correct, else 0)
-    const reward: 1 | 0 = isCorrect ? 1 : 0;
-    const { data: currentStyles } = await admin
-      .from("style_stats")
-      .select("style, alpha, beta")
-      .eq("user_id", user.id)
-      .limit(1)
-      .maybeSingle();
+    // 7. Credit quiz answers on that topic to the style used
+    if (topicId) {
+      const { data: topicConvs } = await admin
+        .from("conversations")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("topic_id", topicId)
+        .order("updated_at", { ascending: false })
+        .limit(5);
 
-    if (currentStyles) {
+      const convIds = (topicConvs || []).map((c) => c.id);
+      let styleToCredit: "analogy" | "steps" | "example" | null = null;
+
+      if (convIds.length > 0) {
+        const { data: topicMsg } = await admin
+          .from("messages")
+          .select("style")
+          .in("conversation_id", convIds)
+          .eq("role", "assistant")
+          .not("style", "is", null)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (topicMsg?.style) {
+          styleToCredit = topicMsg.style as "analogy" | "steps" | "example";
+        }
+      }
+
+      if (!styleToCredit) {
+        const { data: latestMsg } = await admin
+          .from("messages")
+          .select("style")
+          .eq("role", "assistant")
+          .not("style", "is", null)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (latestMsg?.style) {
+          styleToCredit = latestMsg.style as "analogy" | "steps" | "example";
+        }
+      }
+
+      if (!styleToCredit) {
+        styleToCredit = "analogy";
+      }
+
+      const { data: existingStyles } = await admin
+        .from("style_stats")
+        .select("style, alpha, beta")
+        .eq("user_id", user.id);
+
+      const currentStats = existingStyles || [];
+      const statRow = currentStats.find((s) => s.style === styleToCredit);
+      const currentAlpha = statRow ? Number(statRow.alpha) : 1.0;
+      const currentBeta = statRow ? Number(statRow.beta) : 1.0;
+
+      const reward: 1 | 0 = isCorrect ? 1 : 0;
       const updated = updateStyleStats(
-        { alpha: Number(currentStyles.alpha), beta: Number(currentStyles.beta) },
+        { alpha: currentAlpha, beta: currentBeta },
         reward
       );
+
       await admin.from("style_stats").upsert(
         {
           user_id: user.id,
-          style: currentStyles.style,
+          style: styleToCredit,
           alpha: updated.alpha,
           beta: updated.beta,
         },
@@ -206,17 +315,16 @@ export async function POST(request: Request) {
       );
     }
 
-    return NextResponse.json({
+    // Return explanations for both chosen and correct options
+    return Response.json({
       correct: isCorrect,
       correctIndex,
-      explanation,
+      chosenExplanation,
+      correctExplanation,
     });
   } catch (error: unknown) {
     const err = error as Error;
     console.error("[POST /api/quiz/answer Error]:", err);
-    return NextResponse.json(
-      { error: err?.message || "Failed to submit answer", code: "INTERNAL_ERROR" },
-      { status: 500 }
-    );
+    return apiError("Failed to submit answer", "INTERNAL_ERROR", 500);
   }
 }
