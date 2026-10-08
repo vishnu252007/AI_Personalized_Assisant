@@ -39,12 +39,24 @@ export async function POST(request: Request) {
       return apiError("Invalid request payload", "VALIDATION_ERROR", 400);
     }
 
-    // Extract the latest user message from the UI messages
-    const uiMessages: Array<{ role: string; content: string }> = body.messages;
+    // Extract the latest user message from the UI messages (supports both string content and AI SDK v7 parts)
+    const uiMessages: Array<{ role: string; content?: string; parts?: Array<{ type: string; text?: string }> }> = body.messages;
     const latestUserMsg = [...uiMessages]
       .reverse()
       .find((m) => m.role === "user");
-    if (!latestUserMsg || typeof latestUserMsg.content !== "string" || latestUserMsg.content.trim().length === 0) {
+
+    const userText = latestUserMsg
+      ? (typeof latestUserMsg.content === "string" && latestUserMsg.content.trim()) ||
+        (Array.isArray(latestUserMsg.parts)
+          ? latestUserMsg.parts
+              .filter((p) => p.type === "text" && typeof p.text === "string")
+              .map((p) => p.text)
+              .join("")
+              .trim()
+          : "")
+      : "";
+
+    if (!userText) {
       return apiError("No user message found", "VALIDATION_ERROR", 400);
     }
 
@@ -57,7 +69,7 @@ export async function POST(request: Request) {
         .from("conversations")
         .insert({
           user_id: user.id,
-          title: latestUserMsg.content.slice(0, 40) + "...",
+          title: userText.slice(0, 40) + "...",
         })
         .select("id")
         .single();
@@ -88,7 +100,7 @@ export async function POST(request: Request) {
     const { error: msgInsertErr } = await supabase.from("messages").insert({
       conversation_id: conversationId,
       role: "user",
-      content: latestUserMsg.content,
+      content: userText,
     });
     if (msgInsertErr) {
       console.error("[Chat] Failed to persist user message:", msgInsertErr);

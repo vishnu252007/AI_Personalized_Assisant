@@ -67,13 +67,13 @@ describe("AI Provider & Resilience (lib/ai/provider.ts)", () => {
         doStream: async () => ({
           stream: simulateReadableStream({
             chunks: [
-              { type: "text-delta", delta: "Fallback explanation from Groq." },
+              { type: "text-delta", id: "1", delta: "Fallback explanation from Groq." },
               {
                 type: "finish",
-                finishReason: "stop",
+                finishReason: { unified: "stop", raw: undefined },
                 usage: {
-                  inputTokens: { total: 10 },
-                  outputTokens: { total: 20 },
+                  inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+                  outputTokens: { total: 20, text: 20, reasoning: undefined },
                 },
               },
             ],
@@ -139,10 +139,11 @@ describe("AI Provider & Resilience (lib/ai/provider.ts)", () => {
               text: JSON.stringify({ topic: "binary-search", difficulty: 3 }),
             },
           ],
-          finishReason: "stop",
+          finishReason: { unified: "stop", raw: undefined },
+          warnings: [],
           usage: {
-            inputTokens: { total: 10 },
-            outputTokens: { total: 10 },
+            inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 10, text: 10, reasoning: undefined },
           },
         }),
       });
