@@ -54,6 +54,8 @@ export type TutorMessage = {
 export interface TutorStreamResult {
   stream: ReadableStream<TextStreamPart<any>>;
   textStream: ReadableStream<string> & AsyncIterable<string>;
+  ttfbMs: number;
+  provider: string;
   toUIMessageStreamResponse?: (options?: Record<string, unknown>) => Response;
 }
 
@@ -132,11 +134,14 @@ async function peekAndBufferStream(
 ): Promise<{
   stream: ReadableStream<TextStreamPart<any>>;
   textStream: ReadableStream<string> & AsyncIterable<string>;
+  ttfbMs: number;
 }> {
+  const startTime = Date.now();
   const reader = streamResult.stream.getReader();
   const bufferedChunks: TextStreamPart<any>[] = [];
   let foundFirstTextDelta = false;
   let streamError: unknown = null;
+  let ttfbMs = 0;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -149,6 +154,7 @@ async function peekAndBufferStream(
       }
       if (value.type === "text-delta") {
         foundFirstTextDelta = true;
+        ttfbMs = Date.now() - startTime;
         break;
       }
     }
@@ -187,7 +193,27 @@ async function peekAndBufferStream(
     stream: streamForUI,
     textStream: toTextStream({ stream: streamForText }) as ReadableStream<string> &
       AsyncIterable<string>,
+    ttfbMs,
   };
+}
+
+// ── Client & Model Cache / Warm-up ─────────────────────────────────────────────
+
+let cachedGeminiModel: LanguageModel | null = null;
+let cachedGroqModel: LanguageModel | null = null;
+
+export function warmAIProviders(): void {
+  try {
+    const env = getServerEnv();
+    if (env.GOOGLE_GENERATIVE_AI_API_KEY && !cachedGeminiModel) {
+      cachedGeminiModel = google(env.GEMINI_MODEL);
+    }
+    if (env.GROQ_API_KEY && !cachedGroqModel) {
+      cachedGroqModel = groq(env.GROQ_MODEL);
+    }
+  } catch {
+    // Non-blocking module warm-up
+  }
 }
 
 // ── CloudProvider ──────────────────────────────────────────────────────────────
@@ -197,8 +223,10 @@ export class CloudProvider implements AIProviderInterface {
 
   private getModel(): LanguageModel {
     if (this.customModel) return this.customModel;
+    if (cachedGeminiModel) return cachedGeminiModel;
     const env = getServerEnv();
-    return google(env.GEMINI_MODEL);
+    cachedGeminiModel = google(env.GEMINI_MODEL);
+    return cachedGeminiModel;
   }
 
   async streamTutor(
@@ -231,6 +259,8 @@ export class CloudProvider implements AIProviderInterface {
     return {
       stream: buffered.stream,
       textStream: buffered.textStream,
+      ttfbMs: buffered.ttfbMs,
+      provider: "gemini",
       toUIMessageStreamResponse: (options?: any) =>
         createUIMessageStreamResponse({
           stream: toUIMessageStream({
@@ -280,6 +310,7 @@ export class FallbackProvider implements AIProviderInterface {
 
   private getGroqModel(): LanguageModel {
     if (this.fallbackModel) return this.fallbackModel;
+    if (cachedGroqModel) return cachedGroqModel;
     const env = getServerEnv();
     if (!env.GROQ_API_KEY) {
       throw new ProviderError(
@@ -287,7 +318,8 @@ export class FallbackProvider implements AIProviderInterface {
         "groq"
       );
     }
-    return groq(env.GROQ_MODEL);
+    cachedGroqModel = groq(env.GROQ_MODEL);
+    return cachedGroqModel;
   }
 
   async streamTutor(
@@ -321,6 +353,8 @@ export class FallbackProvider implements AIProviderInterface {
       return {
         stream: buffered.stream,
         textStream: buffered.textStream,
+        ttfbMs: buffered.ttfbMs,
+        provider: "gemini",
         toUIMessageStreamResponse: (options?: any) =>
           createUIMessageStreamResponse({
             stream: toUIMessageStream({
@@ -362,6 +396,8 @@ export class FallbackProvider implements AIProviderInterface {
           return {
             stream: bufferedFallback.stream,
             textStream: bufferedFallback.textStream,
+            ttfbMs: bufferedFallback.ttfbMs,
+            provider: "groq",
             toUIMessageStreamResponse: (options?: any) =>
               createUIMessageStreamResponse({
                 stream: toUIMessageStream({

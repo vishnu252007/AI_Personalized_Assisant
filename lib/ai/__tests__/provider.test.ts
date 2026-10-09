@@ -96,6 +96,9 @@ describe("AI Provider & Resilience (lib/ai/provider.ts)", () => {
       }
 
       expect(chunks.join("")).toContain("Fallback explanation from Groq.");
+      expect(result.provider).toBe("groq");
+      expect(typeof result.ttfbMs).toBe("number");
+      expect(result.ttfbMs).toBeGreaterThanOrEqual(0);
     });
 
     it("throws ProviderError when both primary and fallback models fail", async () => {

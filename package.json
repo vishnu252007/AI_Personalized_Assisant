@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "eval:replies": "tsx scripts/eval-replies.ts"
+    "eval:replies": "npx tsx scripts/eval-replies.ts",
+    "benchmark:speed": "npx tsx scripts/benchmark-speed.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.88",

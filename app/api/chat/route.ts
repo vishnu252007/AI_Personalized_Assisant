@@ -60,17 +60,7 @@ export async function POST(request: Request) {
     const user = auth.user;
     authDuration = Date.now() - authStart;
 
-    // 2. Named rate limit check (chat bucket: 20 req/min)
-    const rateLimit = await checkRateLimit(user.id, "chat");
-    if (!rateLimit.success) {
-      return apiError(
-        "Rate limit exceeded. Please wait before sending more messages.",
-        "RATE_LIMITED",
-        429
-      );
-    }
-
-    // 3. Parse and validate request body against Chat Contract
+    // 2. Parse and validate request body against Chat Contract
     const body = await request.json().catch(() => null);
     if (!body) {
       return apiError("Invalid JSON body", "VALIDATION_ERROR", 400);
@@ -124,96 +114,25 @@ export async function POST(request: Request) {
     const supabase = await createClient();
     const admin = createAdminClient();
 
-    // 4. Resolve or initialize conversation session
+    // 3. Resolve session identifiers
     const candidateId = parsed.data.conversationId || parsed.data.id;
     const requestedConvId = isValidUUID(candidateId) ? candidateId : undefined;
-    let conversationId: string;
+    const conversationId = requestedConvId || crypto.randomUUID();
 
-    if (requestedConvId) {
-      const { data: conv } = await supabase
-        .from("conversations")
-        .select("id, user_id")
-        .eq("id", requestedConvId)
-        .maybeSingle();
-
-      if (conv) {
-        if (conv.user_id !== user.id) {
-          return apiError("Conversation not found", "NOT_FOUND", 404);
-        }
-        conversationId = conv.id;
-      } else {
-        // Create conversation with the client-generated UUID
-        const { error: convCreateErr } = await supabase
-          .from("conversations")
-          .insert({
-            id: requestedConvId,
-            user_id: user.id,
-            title: userText.slice(0, 40) + "...",
-          });
-
-        if (convCreateErr) {
-          console.error("[Chat] Conversation creation error:", convCreateErr);
-          return apiError(
-            "Failed to initialize conversation session",
-            "DATABASE_ERROR",
-            500
-          );
-        }
-        conversationId = requestedConvId;
-      }
-    } else {
-      const newConvId = crypto.randomUUID();
-      const { error: convCreateErr } = await supabase
-        .from("conversations")
-        .insert({
-          id: newConvId,
-          user_id: user.id,
-          title: userText.slice(0, 40) + "...",
-        });
-
-      if (convCreateErr) {
-        console.error("[Chat] Conversation creation error:", convCreateErr);
-        return apiError(
-          "Failed to initialize conversation session",
-          "DATABASE_ERROR",
-          500
-        );
-      }
-      conversationId = newConvId;
-    }
-
-    // 5. Persist the incoming user message with error check
-    const { error: msgInsertErr } = await supabase.from("messages").insert({
-      conversation_id: conversationId,
-      role: "user",
-      content: userText,
-    });
-
-    if (msgInsertErr) {
-      console.error("[Chat] User message insert failed:", msgInsertErr);
-      return apiError("Failed to record user message", "DATABASE_ERROR", 500);
-    }
-
-    // 6. Load authoritative conversation history from DB (never trust client history)
-    const { data: dbMessages, error: histErr } = await supabase
-      .from("messages")
-      .select("role, content")
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true })
-      .limit(50);
-
-    if (histErr) {
-      console.error("[Chat] History query error:", histErr);
-      return apiError("Failed to load conversation history", "DATABASE_ERROR", 500);
-    }
-
-    const historyMessages = (dbMessages || []).map((m) => ({
-      role: m.role as "user" | "assistant" | "system",
-      content: m.content,
-    }));
-
-    // 7. Load learner profile and calculate pedagogical adaptation
-    const [profileRes, styleRes, topicsRes] = await Promise.all([
+    // 4. PARALLEL DB FETCH: Execute rate-limit, conversation verify, history, profile, style stats, and topic states simultaneously
+    const [rateLimit, convRes, histRes, profileRes, styleRes, topicsRes] = await Promise.all([
+      checkRateLimit(user.id, "chat"),
+      requestedConvId
+        ? supabase.from("conversations").select("id, user_id").eq("id", requestedConvId).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+      requestedConvId
+        ? supabase
+            .from("messages")
+            .select("role, content")
+            .eq("conversation_id", requestedConvId)
+            .order("created_at", { ascending: true })
+            .limit(50)
+        : Promise.resolve({ data: [], error: null }),
       supabase
         .from("profiles")
         .select("level, subject")
@@ -231,18 +150,63 @@ export async function POST(request: Request) {
         .eq("user_id", user.id),
     ]);
 
-    // Ensure style_stats rows exist for all styles
+    dbDuration = Date.now() - dbStart;
+
+    // Check rate limit
+    if (!rateLimit.success) {
+      return apiError(
+        "Rate limit exceeded. Please wait before sending more messages.",
+        "RATE_LIMITED",
+        429
+      );
+    }
+
+    // Verify conversation ownership
+    if (convRes.data && convRes.data.user_id !== user.id) {
+      return apiError("Conversation not found", "NOT_FOUND", 404);
+    }
+
+    // Non-blocking conversation initialization if new
+    if (!convRes.data) {
+      admin.from("conversations").insert({
+        id: conversationId,
+        user_id: user.id,
+        title: userText.slice(0, 40) + "...",
+      }).then(({ error }) => {
+        if (error) console.error("[Chat] Non-blocking conversation create error:", error);
+      });
+    }
+
+    // Non-blocking user message persistence (stream starts immediately without waiting for DB write)
+    admin.from("messages").insert({
+      conversation_id: conversationId,
+      role: "user",
+      content: userText,
+    }).then(({ error }) => {
+      if (error) console.error("[Chat] Non-blocking user message insert error:", error);
+    });
+
+    // Build authoritative message history for the AI tutor
+    const priorHistory = (histRes.data || []).map((m: { role: string; content: string }) => ({
+      role: m.role as "user" | "assistant" | "system",
+      content: m.content,
+    }));
+    const historyMessages = [...priorHistory, { role: "user" as const, content: userText }];
+
+    // Non-blocking style stats bootstrap if missing
     const existingStyles = (styleRes.data || []).map((s: { style: string }) => s.style);
     const missingStyles = EXPLANATION_STYLES.filter((s) => !existingStyles.includes(s));
     if (missingStyles.length > 0) {
-      await admin.from("style_stats").insert(
+      admin.from("style_stats").insert(
         missingStyles.map((s) => ({
           user_id: user.id,
           style: s,
           alpha: 1.0,
           beta: 1.0,
         }))
-      );
+      ).then(({ error }) => {
+        if (error) console.error("[Chat] Non-blocking style_stats insert error:", error);
+      });
     }
 
     const styleStats: StyleStat[] = (styleRes.data || []).map(
@@ -305,8 +269,6 @@ export async function POST(request: Request) {
       topics: topicStates,
     });
 
-    dbDuration = Date.now() - dbStart;
-
     // Derive learner stage from mastery or stated profile level
     const stage: LearnerStage = (() => {
       const level = profileRes.data?.level;
@@ -329,7 +291,7 @@ export async function POST(request: Request) {
       misconceptions: Object.keys(misconceptions),
     };
 
-    // 8. Stream tutor response with resilient fallback
+    // 5. Stream tutor response with resilient fallback & latency tracking
     const aiStart = Date.now();
     const provider = getProvider();
     const streamResult = await provider.streamTutor(
@@ -341,11 +303,17 @@ export async function POST(request: Request) {
       tutorContext
     );
     const aiDuration = Date.now() - aiStart;
+    const ttfb = streamResult.ttfbMs;
+    const providerUsed = streamResult.provider;
+
+    console.log(
+      `[Chat Latency] user=${user.id} conv=${conversationId} provider=${providerUsed} auth=${authDuration}ms db=${dbDuration}ms ttfb=${ttfb}ms aiTotal=${aiDuration}ms`
+    );
 
     const activeConvId = conversationId;
     const activeUserId = user.id;
 
-    // 9. Format response via createUIMessageStreamResponse and toUIMessageStream
+    // 6. Format response via createUIMessageStreamResponse and toUIMessageStream
     const uiInputMessage: UIMessage = {
       id: incomingMessageId || crypto.randomUUID(),
       role: "user",
@@ -361,11 +329,14 @@ export async function POST(request: Request) {
             return {
               style: activeStyle,
               conceptIds: [],
+              ttfbMs: ttfb,
+              provider: providerUsed,
             };
           }
         },
         onEnd: async ({ messages: completedMessages }) => {
           try {
+            const streamDuration = Date.now() - aiStart;
             const assistantMsg = completedMessages[completedMessages.length - 1];
             const assistantText =
               assistantMsg?.parts
@@ -374,6 +345,16 @@ export async function POST(request: Request) {
                 ?.join("") || "";
 
             if (assistantText) {
+              const estimatedTokens = Math.round(assistantText.length / 4);
+              const tokPerSec =
+                streamDuration > 0
+                  ? ((estimatedTokens / streamDuration) * 1000).toFixed(1)
+                  : "0";
+
+              console.log(
+                `[Stream Complete] user=${activeUserId} conv=${activeConvId} tokens=${estimatedTokens} duration=${streamDuration}ms rate=${tokPerSec}tok/s`
+              );
+
               await admin.from("messages").insert({
                 conversation_id: activeConvId,
                 role: "assistant",
@@ -410,7 +391,8 @@ export async function POST(request: Request) {
       headers: {
         "x-conversation-id": activeConvId,
         "x-style-used": activeStyle,
-        "Server-Timing": `auth;dur=${authDuration}, db;dur=${dbDuration}, ai;dur=${aiDuration}, total;dur=${Date.now() - reqStart}`,
+        "x-ai-provider": providerUsed,
+        "Server-Timing": `auth;dur=${authDuration}, db;dur=${dbDuration}, ttfb;dur=${ttfb}, ai;dur=${aiDuration}, total;dur=${Date.now() - reqStart}`,
       },
     });
   } catch (error: unknown) {
