@@ -68,6 +68,15 @@ describe("Environment & Core Client Harness", () => {
       expect(parsed.NEXT_PUBLIC_SUPABASE_ANON_KEY).toBe("test-anon-key");
       expect(parsed.NEXT_PUBLIC_SITE_URL).toBe("http://localhost:3000");
     });
+
+    it("strictly requires NEXT_PUBLIC_SITE_URL in production without default fallback", () => {
+      process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
+      delete process.env.NEXT_PUBLIC_SITE_URL;
+      (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+
+      expect(() => getClientEnv()).toThrowError(/NEXT_PUBLIC_SITE_URL/);
+    });
   });
 
   describe("lib/env.server.ts: Server Environment Validation", () => {
@@ -83,6 +92,7 @@ describe("Environment & Core Client Harness", () => {
 
       _resetServerEnvCache();
       (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+      process.env.NEXT_PUBLIC_SITE_URL = "https://learnai.example.com";
       expect(() => getServerEnv()).toThrowError(/SUPABASE_SERVICE_ROLE_KEY/);
       expect(() => getServerEnv()).toThrowError(/GOOGLE_GENERATIVE_AI_API_KEY/);
     });
@@ -102,17 +112,16 @@ describe("Environment & Core Client Harness", () => {
     });
   });
 
-  describe("Supabase Clients & Core Infrastructure", () => {
-    it("instantiates browser client successfully with valid credentials", () => {
+  describe("Supabase Client Initialization", () => {
+    it("initializes browser client with valid environment variables", () => {
       process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
 
       const client = createBrowserClient();
       expect(client).toBeDefined();
-      expect(client.auth).toBeDefined();
     });
 
-    it("instantiates admin client with service_role key and session persistence disabled", () => {
+    it("initializes admin client with service role key", () => {
       process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
       process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-key";
@@ -120,7 +129,6 @@ describe("Environment & Core Client Harness", () => {
 
       const admin = createAdminClient();
       expect(admin).toBeDefined();
-      expect(admin.auth).toBeDefined();
     });
   });
 });

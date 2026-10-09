@@ -4,8 +4,8 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
 /**
- * Standard API error response.
- * In production, the message is replaced with a generic string to avoid leaking internals.
+ * Standard API error response helper.
+ * Never returns internal error messages to client callers when status >= 500.
  */
 export function apiError(
   message: string,
@@ -25,7 +25,19 @@ export function apiError(
 }
 
 /**
- * Extracts and validates the authenticated user from the request.
+ * Catches unhandled route handler errors, logs them securely on the server,
+ * and returns a standard safe 500 error response without exposing internal traces.
+ */
+export function handleRouteError(
+  error: unknown,
+  fallbackMessage: string = "Internal server error"
+): NextResponse {
+  console.error("[Route Error Caught]:", error);
+  return apiError(fallbackMessage, "INTERNAL_ERROR", 500);
+}
+
+/**
+ * Extracts and validates the authenticated user from the request cookies.
  * Returns the user object on success or a 401 NextResponse on failure.
  */
 export async function requireUser(): Promise<

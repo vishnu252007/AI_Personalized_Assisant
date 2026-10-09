@@ -3,7 +3,7 @@ import { submitAnswerSchema } from "@/lib/ai/schemas";
 import { calculateNewMastery, calculateResponseOutcome } from "@/lib/learner/mastery";
 import { calculateRetentionProbability, calculateUpdatedHalfLife } from "@/lib/learner/forgetting";
 import { updateStyleStats } from "@/lib/learner/bandit";
-import { requireUser, apiError } from "@/lib/api-helpers";
+import { requireUser, apiError, handleRouteError } from "@/lib/api-helpers";
 
 export const runtime = "nodejs";
 
@@ -158,6 +158,16 @@ export async function POST(request: Request) {
     });
 
     if (attemptInsertError) {
+      if (
+        attemptInsertError.code === "23505" ||
+        attemptInsertError.message?.toLowerCase().includes("unique")
+      ) {
+        return apiError(
+          "Duplicate answer submission: question has already been answered",
+          "DUPLICATE_SUBMISSION",
+          409
+        );
+      }
       return apiError("Failed to record attempt", "DATABASE_ERROR", 500);
     }
 
@@ -323,8 +333,6 @@ export async function POST(request: Request) {
       correctExplanation,
     });
   } catch (error: unknown) {
-    const err = error as Error;
-    console.error("[POST /api/quiz/answer Error]:", err);
-    return apiError("Failed to submit answer", "INTERNAL_ERROR", 500);
+    return handleRouteError(error, "Failed to submit answer");
   }
 }

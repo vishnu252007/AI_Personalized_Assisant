@@ -13,7 +13,7 @@ import {
 } from "@/lib/learner/forgetting";
 import { calculateEffectiveMastery } from "@/lib/learner/mastery";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { requireUser, apiError } from "@/lib/api-helpers";
+import { requireUser, apiError, handleRouteError } from "@/lib/api-helpers";
 import { getFallbackQuestions } from "@/lib/ai/fallback-questions";
 
 export const runtime = "nodejs";
@@ -25,8 +25,8 @@ export async function POST(request: Request) {
     if (auth.error) return auth.error;
     const user = auth.user;
 
-    // Stricter rate limit: quiz generation is expensive
-    const rateLimit = await checkRateLimit(`quiz:${user.id}`);
+    // Stricter rate limit: quiz generation is expensive (quizGenerate: 5/min)
+    const rateLimit = await checkRateLimit(user.id, "quizGenerate");
     if (!rateLimit.success) {
       return apiError(
         "Rate limit exceeded. Please wait before generating another quiz.",
@@ -302,8 +302,6 @@ export async function POST(request: Request) {
       questions: clientQuestions,
     });
   } catch (error: unknown) {
-    const err = error as Error;
-    console.error("[POST /api/quiz/generate Error]:", err);
-    return apiError("Failed to generate quiz", "INTERNAL_ERROR", 500);
+    return handleRouteError(error, "Failed to generate quiz");
   }
 }

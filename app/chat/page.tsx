@@ -17,6 +17,7 @@ import {
   ChevronLeft,
   ChevronRight,
   BookOpen,
+  AlertCircle,
 } from "lucide-react";
 import { CURATED_TOPICS } from "@/lib/learner/topics";
 
@@ -95,11 +96,27 @@ function ChatContent() {
     sendMessage,
     status,
     setMessages,
+    error,
   } = useChat({
     transport,
   });
 
   const isLoading = status === "submitted" || status === "streaming";
+
+  const handleSelectConversation = async (id: string) => {
+    setActiveConversationId(id);
+    try {
+      const res = await fetch(`/api/conversations/${id}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.messages)) {
+          setMessages(json.messages);
+        }
+      }
+    } catch (err) {
+      console.error("[Chat] Failed to load conversation history:", err);
+    }
+  };
 
   React.useEffect(() => {
     loadConversations();
@@ -179,7 +196,7 @@ function ChatContent() {
               return (
                 <div
                   key={conv.id}
-                  onClick={() => setActiveConversationId(conv.id)}
+                  onClick={() => handleSelectConversation(conv.id)}
                   className={`group flex items-center justify-between rounded-xl px-3 py-2 text-xs font-medium cursor-pointer transition ${
                     isActive
                       ? "bg-primary/15 text-primary"
@@ -317,6 +334,17 @@ function ChatContent() {
               <div className="rounded-2xl border border-border bg-card/60 px-4 py-3 text-xs text-muted-foreground flex items-center gap-2">
                 <Sparkles className="h-3.5 w-3.5 text-primary animate-spin" />
                 <span>Formulating Socratic counter-question...</span>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="flex gap-3 max-w-3xl mr-auto">
+              <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive flex items-center gap-2 shadow-sm">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>
+                  {error.message || "Failed to generate tutor response. Please try again."}
+                </span>
               </div>
             </div>
           )}

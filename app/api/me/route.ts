@@ -1,37 +1,33 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireUser, apiError } from "@/lib/api-helpers";
+import { requireUser, apiError, handleRouteError } from "@/lib/api-helpers";
 
 export const runtime = "nodejs";
 
 /**
  * DELETE /api/me
- * Supports the privacy guarantee in settings by purging all personal user data:
- * learner states, style stats, quizzes, conversations, profile, and the auth account.
+ * Permanently purges user account and all cascaded data.
+ * Invariant: Requires { confirm: "DELETE" } in request body.
+ * Calls admin.auth.admin.deleteUser which cascades across all foreign keys.
  */
-export async function DELETE() {
+export async function DELETE(request: Request) {
   try {
     const auth = await requireUser();
     if (auth.error) return auth.error;
     const user = auth.user;
 
-    const admin = createAdminClient();
-
-    // Delete all user data in parallel
-    const results = await Promise.allSettled([
-      admin.from("learner_topic_state").delete().eq("user_id", user.id),
-      admin.from("style_stats").delete().eq("user_id", user.id),
-      admin.from("quizzes").delete().eq("user_id", user.id),
-      admin.from("conversations").delete().eq("user_id", user.id),
-      admin.from("profiles").delete().eq("id", user.id),
-    ]);
-
-    // Check for data deletion errors
-    const dataErrors = results.filter((r) => r.status === "rejected");
-    if (dataErrors.length > 0) {
-      console.error("[DELETE /api/me] Data deletion errors:", dataErrors);
+    // Strict confirmation check
+    const body = await request.json().catch(() => ({}));
+    if (!body || body.confirm !== "DELETE") {
+      return apiError(
+        "Confirmation required: request body must contain { confirm: 'DELETE' }",
+        "CONFIRMATION_REQUIRED",
+        400
+      );
     }
 
-    // Delete the auth user account via admin API
+    const admin = createAdminClient();
+
+    // Cascades across profiles, conversations, messages, quizzes, attempts, etc.
     const { error: deleteUserError } =
       await admin.auth.admin.deleteUser(user.id);
 
@@ -52,8 +48,6 @@ export async function DELETE() {
       message: "All learner data and account have been permanently removed.",
     });
   } catch (error: unknown) {
-    const err = error as Error;
-    console.error("[DELETE /api/me Error]:", err);
-    return apiError("Failed to delete user data", "INTERNAL_ERROR", 500);
+    return handleRouteError(error, "Failed to delete user account");
   }
 }

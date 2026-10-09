@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { APICallError } from "ai";
 import {
   FallbackProvider,
@@ -53,17 +53,17 @@ describe("AI Provider & Resilience (lib/ai/provider.ts)", () => {
     });
   });
 
-  describe("Stream Tutor Fallback with MockLanguageModel", () => {
+  describe("Stream Tutor Fallback with MockLanguageModelV4", () => {
     it("falls back to secondary model when primary stream fails during peek", async () => {
       // Primary model that fails immediately upon streaming
-      const failingPrimary = new MockLanguageModelV3({
+      const failingPrimary = new MockLanguageModelV4({
         doStream: async () => {
           throw new Error("Gemini quota 429 exceeded");
         },
       });
 
       // Secondary model that succeeds
-      const successfulFallback = new MockLanguageModelV3({
+      const successfulFallback = new MockLanguageModelV4({
         doStream: async () => ({
           stream: simulateReadableStream({
             chunks: [
@@ -99,13 +99,13 @@ describe("AI Provider & Resilience (lib/ai/provider.ts)", () => {
     });
 
     it("throws ProviderError when both primary and fallback models fail", async () => {
-      const failingPrimary = new MockLanguageModelV3({
+      const failingPrimary = new MockLanguageModelV4({
         doStream: async () => {
           throw new Error("Primary connection failure");
         },
       });
 
-      const failingFallback = new MockLanguageModelV3({
+      const failingFallback = new MockLanguageModelV4({
         doStream: async () => {
           throw new Error("Secondary connection failure");
         },
@@ -123,15 +123,15 @@ describe("AI Provider & Resilience (lib/ai/provider.ts)", () => {
     });
   });
 
-  describe("Structured Output Fallback with MockLanguageModel", () => {
+  describe("Structured Output Fallback with MockLanguageModelV4", () => {
     it("falls back to secondary model when primary structured generation fails", async () => {
-      const failingPrimary = new MockLanguageModelV3({
+      const failingPrimary = new MockLanguageModelV4({
         doGenerate: async () => {
           throw new Error("Primary generate failed 500");
         },
       });
 
-      const successfulFallback = new MockLanguageModelV3({
+      const successfulFallback = new MockLanguageModelV4({
         doGenerate: async () => ({
           content: [
             {

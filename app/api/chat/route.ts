@@ -1,4 +1,9 @@
-import { after } from "next/server";
+import { z } from "zod";
+import {
+  createUIMessageStreamResponse,
+  toUIMessageStream,
+  type UIMessage,
+} from "ai";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getProvider } from "@/lib/ai/provider";
@@ -7,24 +12,55 @@ import { buildProfileSummary } from "@/lib/learner/profile";
 import { analyzeConversationTurn } from "@/lib/learner/analyzer";
 import { calculateRetentionProbability, isDueForReview } from "@/lib/learner/forgetting";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { requireUser, apiError } from "@/lib/api-helpers";
+import { requireUser, apiError, handleRouteError } from "@/lib/api-helpers";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function isValidUUID(str: string | undefined): boolean {
+  return typeof str === "string" && UUID_REGEX.test(str);
+}
+
+const chatRequestSchema = z.object({
+  id: z.string().optional(),
+  conversationId: z.string().uuid("Invalid conversation UUID").optional(),
+  message: z
+    .object({
+      id: z.string().optional(),
+      role: z.literal("user"),
+      parts: z
+        .array(
+          z.object({
+            type: z.literal("text"),
+            text: z
+              .string()
+              .min(1, "Message text cannot be empty")
+              .max(4000, "Message text cannot exceed 4000 characters"),
+          })
+        )
+        .min(1, "Message must contain at least one text part"),
+    })
+    .optional(),
+  messages: z.array(z.any()).optional(),
+  topicSlug: z.string().optional(),
+});
+
 export async function POST(request: Request) {
-  // Resolve the after() promise tracker — resolved on success, error, or abort
-  let resolveAssistantText: (text: string) => void = () => {};
-  const assistantTextPromise = new Promise<string>((resolve) => {
-    resolveAssistantText = resolve;
-  });
+  const reqStart = Date.now();
+  let authDuration = 0;
+  let dbDuration = 0;
 
   try {
+    // 1. Authenticate user
+    const authStart = Date.now();
     const auth = await requireUser();
     if (auth.error) return auth.error;
     const user = auth.user;
+    authDuration = Date.now() - authStart;
 
-    const rateLimit = await checkRateLimit(user.id);
+    // 2. Named rate limit check (chat bucket: 20 req/min)
+    const rateLimit = await checkRateLimit(user.id, "chat");
     if (!rateLimit.success) {
       return apiError(
         "Rate limit exceeded. Please wait before sending more messages.",
@@ -33,94 +69,149 @@ export async function POST(request: Request) {
       );
     }
 
-    // Accept raw body — we extract only what we need
+    // 3. Parse and validate request body against Chat Contract
     const body = await request.json().catch(() => null);
-    if (!body || !Array.isArray(body.messages) || body.messages.length === 0) {
-      return apiError("Invalid request payload", "VALIDATION_ERROR", 400);
+    if (!body) {
+      return apiError("Invalid JSON body", "VALIDATION_ERROR", 400);
     }
 
-    // Extract the latest user message from the UI messages (supports both string content and AI SDK v7 parts)
-    const uiMessages: Array<{ role: string; content?: string; parts?: Array<{ type: string; text?: string }> }> = body.messages;
-    const latestUserMsg = [...uiMessages]
-      .reverse()
-      .find((m) => m.role === "user");
-
-    const userText = latestUserMsg
-      ? (typeof latestUserMsg.content === "string" && latestUserMsg.content.trim()) ||
-        (Array.isArray(latestUserMsg.parts)
-          ? latestUserMsg.parts
-              .filter((p) => p.type === "text" && typeof p.text === "string")
-              .map((p) => p.text)
-              .join("")
-              .trim()
-          : "")
-      : "";
-
-    if (!userText) {
-      return apiError("No user message found", "VALIDATION_ERROR", 400);
+    const parsed = chatRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return apiError(
+        "Invalid chat request payload",
+        "VALIDATION_ERROR",
+        400,
+        parsed.error.flatten()
+      );
     }
 
+    // Extract user message text according to contract
+    let userText = "";
+    let incomingMessageId: string | undefined;
+
+    if (parsed.data.message) {
+      userText = parsed.data.message.parts
+        .map((p) => p.text)
+        .join("")
+        .trim();
+      incomingMessageId = parsed.data.message.id;
+    } else if (Array.isArray(parsed.data.messages) && parsed.data.messages.length > 0) {
+      const lastMsg = [...parsed.data.messages].reverse().find((m) => m.role === "user");
+      if (lastMsg) {
+        if (typeof lastMsg.content === "string") {
+          userText = lastMsg.content.trim();
+        } else if (Array.isArray(lastMsg.parts)) {
+          userText = lastMsg.parts
+            .filter((p: { type: string; text?: string }) => p.type === "text" && typeof p.text === "string")
+            .map((p: { text?: string }) => p.text || "")
+            .join("")
+            .trim();
+        }
+        incomingMessageId = lastMsg.id;
+      }
+    }
+
+    if (!userText || userText.length > 4000) {
+      return apiError(
+        "User message must be between 1 and 4000 characters",
+        "VALIDATION_ERROR",
+        400
+      );
+    }
+
+    const dbStart = Date.now();
     const supabase = await createClient();
-    let conversationId: string | undefined = body.conversationId;
+    const admin = createAdminClient();
 
-    // 1. Resolve or create conversation
-    if (!conversationId) {
-      const { data: newConv, error: convErr } = await supabase
+    // 4. Resolve or initialize conversation session
+    const candidateId = parsed.data.conversationId || parsed.data.id;
+    const requestedConvId = isValidUUID(candidateId) ? candidateId : undefined;
+    let conversationId: string;
+
+    if (requestedConvId) {
+      const { data: conv } = await supabase
+        .from("conversations")
+        .select("id, user_id")
+        .eq("id", requestedConvId)
+        .maybeSingle();
+
+      if (conv) {
+        if (conv.user_id !== user.id) {
+          return apiError("Conversation not found", "NOT_FOUND", 404);
+        }
+        conversationId = conv.id;
+      } else {
+        // Create conversation with the client-generated UUID
+        const { error: convCreateErr } = await supabase
+          .from("conversations")
+          .insert({
+            id: requestedConvId,
+            user_id: user.id,
+            title: userText.slice(0, 40) + "...",
+          });
+
+        if (convCreateErr) {
+          console.error("[Chat] Conversation creation error:", convCreateErr);
+          return apiError(
+            "Failed to initialize conversation session",
+            "DATABASE_ERROR",
+            500
+          );
+        }
+        conversationId = requestedConvId;
+      }
+    } else {
+      const newConvId = crypto.randomUUID();
+      const { error: convCreateErr } = await supabase
         .from("conversations")
         .insert({
+          id: newConvId,
           user_id: user.id,
           title: userText.slice(0, 40) + "...",
-        })
-        .select("id")
-        .single();
+        });
 
-      if (convErr || !newConv) {
+      if (convCreateErr) {
+        console.error("[Chat] Conversation creation error:", convCreateErr);
         return apiError(
           "Failed to initialize conversation session",
           "DATABASE_ERROR",
           500
         );
       }
-      conversationId = newConv.id;
-    } else {
-      // Verify conversation ownership
-      const { data: conv } = await supabase
-        .from("conversations")
-        .select("id")
-        .eq("id", conversationId)
-        .eq("user_id", user.id)
-        .maybeSingle();
-
-      if (!conv) {
-        return apiError("Conversation not found", "NOT_FOUND", 404);
-      }
+      conversationId = newConvId;
     }
 
-    // 2. Persist the incoming user message — check insert error
+    // 5. Persist the incoming user message with error check
     const { error: msgInsertErr } = await supabase.from("messages").insert({
       conversation_id: conversationId,
       role: "user",
       content: userText,
     });
+
     if (msgInsertErr) {
-      console.error("[Chat] Failed to persist user message:", msgInsertErr);
+      console.error("[Chat] User message insert failed:", msgInsertErr);
+      return apiError("Failed to record user message", "DATABASE_ERROR", 500);
     }
 
-    // 3. Load conversation history from DB (authoritative source)
-    const { data: dbMessages } = await supabase
+    // 6. Load authoritative conversation history from DB (never trust client history)
+    const { data: dbMessages, error: histErr } = await supabase
       .from("messages")
       .select("role, content")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: true })
       .limit(50);
 
+    if (histErr) {
+      console.error("[Chat] History query error:", histErr);
+      return apiError("Failed to load conversation history", "DATABASE_ERROR", 500);
+    }
+
     const historyMessages = (dbMessages || []).map((m) => ({
       role: m.role as "user" | "assistant" | "system",
       content: m.content,
     }));
 
-    // 4. Fetch learner profile, bandit stats, and topic states
-    const admin = createAdminClient();
+    // 7. Load learner profile and calculate pedagogical adaptation
     const [profileRes, styleRes, topicsRes] = await Promise.all([
       supabase
         .from("profiles")
@@ -139,13 +230,9 @@ export async function POST(request: Request) {
         .eq("user_id", user.id),
     ]);
 
-    // Ensure style_stats rows exist for all 3 styles on first use
-    const existingStyles = (styleRes.data || []).map(
-      (s: { style: string }) => s.style
-    );
-    const missingStyles = EXPLANATION_STYLES.filter(
-      (s) => !existingStyles.includes(s)
-    );
+    // Ensure style_stats rows exist for all styles
+    const existingStyles = (styleRes.data || []).map((s: { style: string }) => s.style);
+    const missingStyles = EXPLANATION_STYLES.filter((s) => !existingStyles.includes(s));
     if (missingStyles.length > 0) {
       await admin.from("style_stats").insert(
         missingStyles.map((s) => ({
@@ -165,7 +252,6 @@ export async function POST(request: Request) {
       })
     );
 
-    // Choose pedagogical style via Thompson Sampling
     const activeStyle = selectExplanationStyle(
       styleStats.length > 0
         ? styleStats
@@ -176,32 +262,31 @@ export async function POST(request: Request) {
           ]
     );
 
-    // Handle request abort so after() tracker promise resolves
-    request.signal.addEventListener("abort", () => {
-      resolveAssistantText("");
-    });
+    // Build learner state representation with retention probabilities
+    const topicStates = (topicsRes.data || []).map(
+      (t: {
+        last_reviewed_at: string;
+        half_life_days: number;
+        mastery_score: number;
+        attempts_count: number;
+        topics: { name: string; slug: string } | null;
+      }) => {
+        const daysSince =
+          Math.max(0, Date.now() - new Date(t.last_reviewed_at).getTime()) /
+          (1000 * 60 * 60 * 24);
+        const R = calculateRetentionProbability(daysSince, Number(t.half_life_days));
+        return {
+          name: t.topics?.name || "Topic",
+          slug: t.topics?.slug || "topic",
+          masteryScore: Number(t.mastery_score),
+          effectiveMastery: Number(t.mastery_score) * R,
+          attemptsCount: t.attempts_count,
+          retentionProbability: R,
+          isDueForReview: isDueForReview(R),
+        };
+      }
+    );
 
-    // Build profile summary with real retention, due-review, and misconception data
-    const topicStates = (topicsRes.data || []).map((t) => {
-      const daysSince =
-        Math.max(
-          0,
-          Date.now() - new Date(t.last_reviewed_at).getTime()
-        ) /
-        (1000 * 60 * 60 * 24);
-      const R = calculateRetentionProbability(daysSince, Number(t.half_life_days));
-      return {
-        name: t.topics?.name || "Topic",
-        slug: t.topics?.slug || "topic",
-        masteryScore: Number(t.mastery_score),
-        effectiveMastery: Number(t.mastery_score) * R,
-        attemptsCount: t.attempts_count,
-        retentionProbability: R,
-        isDueForReview: isDueForReview(R),
-      };
-    });
-
-    // Aggregate misconceptions across topics (capped length for prompt safety)
     const misconceptions: Record<string, number> = {};
     for (const t of topicsRes.data || []) {
       const mc = (t as { misconceptions?: Record<string, number> }).misconceptions || {};
@@ -211,7 +296,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const profileSummary = buildProfileSummary({
+    const sanitizedProfileSummary = buildProfileSummary({
       level: profileRes.data?.level || "beginner",
       preferredSubject: profileRes.data?.subject || "Computer Science",
       bestStyle: activeStyle,
@@ -219,72 +304,92 @@ export async function POST(request: Request) {
       topics: topicStates,
     });
 
-    // Sanitize / cap profile summary to avoid prompt overflow
-    const cappedSummary = profileSummary.slice(0, 600);
+    dbDuration = Date.now() - dbStart;
 
-    // 5. Register background analyzer via after()
+    // 8. Stream tutor response with resilient fallback
+    const aiStart = Date.now();
+    const provider = getProvider();
+    const streamResult = await provider.streamTutor(
+      historyMessages,
+      sanitizedProfileSummary,
+      activeStyle,
+      undefined,
+      request.signal
+    );
+    const aiDuration = Date.now() - aiStart;
+
     const activeConvId = conversationId;
     const activeUserId = user.id;
 
-    after(async () => {
-      try {
-        const assistantText = await assistantTextPromise;
-        if (!assistantText) return;
+    // 9. Format response via createUIMessageStreamResponse and toUIMessageStream
+    const uiInputMessage: UIMessage = {
+      id: incomingMessageId || crypto.randomUUID(),
+      role: "user",
+      parts: [{ type: "text", text: userText }],
+    };
 
-        await analyzeConversationTurn({
-          userId: activeUserId,
-          conversationId: activeConvId,
-          turns: [
-            ...historyMessages.map((m) => ({
-              role: m.role as "user" | "assistant",
-              content: m.content,
-            })),
-            { role: "assistant", content: assistantText },
-          ],
-          subject: profileRes.data?.subject || "Computer Science",
-        });
-      } catch (analyzeErr) {
-        console.error("[Background Analyzer Error]:", analyzeErr);
-      }
-    });
-
-    // 6. Stream response using AI provider
-    const provider = getProvider();
-    const result = await provider.streamTutor(
-      historyMessages,
-      cappedSummary,
-      activeStyle,
-      async ({ text }) => {
-        try {
-          // Save assistant message with the style used
-          const { error: saveErr } = await admin.from("messages").insert({
-            conversation_id: activeConvId,
-            role: "assistant",
-            content: text,
-            style: activeStyle,
-          });
-          if (saveErr) {
-            console.error("[Save Assistant Message Error]:", saveErr);
+    return createUIMessageStreamResponse({
+      stream: toUIMessageStream({
+        stream: streamResult.stream,
+        originalMessages: [uiInputMessage],
+        messageMetadata: ({ part }) => {
+          if (part.type === "start") {
+            return {
+              style: activeStyle,
+              conceptIds: [],
+            };
           }
-        } catch (saveErr) {
-          console.error("[Save Assistant Message Error]:", saveErr);
-        } finally {
-          resolveAssistantText(text);
-        }
-      }
-    );
+        },
+        onEnd: async ({ messages: completedMessages }) => {
+          try {
+            const assistantMsg = completedMessages[completedMessages.length - 1];
+            const assistantText =
+              assistantMsg?.parts
+                ?.filter((p): p is { type: "text"; text: string } => p.type === "text" && "text" in p && typeof (p as { text: unknown }).text === "string")
+                ?.map((p) => p.text)
+                ?.join("") || "";
 
-    return result.toUIMessageStreamResponse({
+            if (assistantText) {
+              await admin.from("messages").insert({
+                conversation_id: activeConvId,
+                role: "assistant",
+                content: assistantText,
+                style: activeStyle,
+              });
+
+              // Trigger background cognitive analyzer
+              try {
+                analyzeConversationTurn({
+                  userId: activeUserId,
+                  conversationId: activeConvId,
+                  turns: [
+                    ...historyMessages.map((m) => ({
+                      role: m.role as "user" | "assistant",
+                      content: m.content,
+                    })),
+                    { role: "assistant", content: assistantText },
+                  ],
+                  subject: profileRes.data?.subject || "Computer Science",
+                }).catch((analyzeErr) => {
+                  console.error("[Background Analyzer Error]:", analyzeErr);
+                });
+              } catch (analyzeErr) {
+                console.error("[Background Analyzer Error]:", analyzeErr);
+              }
+            }
+          } catch (saveErr) {
+            console.error("[Chat onEnd Assistant Message Save Error]:", saveErr);
+          }
+        },
+        onError: () => "An error occurred while generating the tutor response.",
+      }),
       headers: {
         "x-conversation-id": activeConvId,
         "x-style-used": activeStyle,
+        "Server-Timing": `auth;dur=${authDuration}, db;dur=${dbDuration}, ai;dur=${aiDuration}, total;dur=${Date.now() - reqStart}`,
       },
     });
   } catch (error: unknown) {
-    // Resolve the promise on error so after() doesn't hang forever
-    resolveAssistantText("");
-    const err = error as Error;
-    console.error("[POST /api/chat Error]:", err);
-    return apiError("Internal server error", "INTERNAL_ERROR", 500);
+    return handleRouteError(error, "Failed to process chat message");
   }
 }

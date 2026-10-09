@@ -5,6 +5,7 @@ import { POST as quizAnswerPost } from "@/app/api/quiz/answer/route";
 import { POST as quizFinishPost } from "@/app/api/quiz/finish/route";
 import { GET as dashboardGet } from "@/app/api/dashboard/route";
 import { DELETE as meDelete } from "@/app/api/me/route";
+import { GET as conversationByIdGet } from "@/app/api/conversations/[id]/route";
 
 describe("Route Handlers Security & Validation", () => {
   beforeEach(() => {
@@ -20,7 +21,12 @@ describe("Route Handlers Security & Validation", () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [{ role: "user", content: "Hello" }],
+          id: "123e4567-e89b-12d3-a456-426614174000",
+          message: {
+            id: "msg-1",
+            role: "user",
+            parts: [{ type: "text", text: "Hello Socratic tutor" }],
+          },
         }),
       });
 
@@ -28,6 +34,16 @@ describe("Route Handlers Security & Validation", () => {
       expect(res.status).toBe(401);
       const json = await res.json();
       expect(json.code).toBe("UNAUTHORIZED");
+    });
+  });
+
+  describe("GET /api/conversations/[id]", () => {
+    it("returns 401 Unauthorized when unauthenticated", async () => {
+      const req = new Request("http://localhost:3000/api/conversations/123e4567-e89b-12d3-a456-426614174000");
+      const res = await conversationByIdGet(req, {
+        params: Promise.resolve({ id: "123e4567-e89b-12d3-a456-426614174000" }),
+      });
+      expect(res.status).toBe(401);
     });
   });
 
@@ -86,7 +102,12 @@ describe("Route Handlers Security & Validation", () => {
 
   describe("DELETE /api/me", () => {
     it("returns 401 Unauthorized when unauthenticated", async () => {
-      const res = await meDelete();
+      const req = new Request("http://localhost:3000/api/me", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: "DELETE" }),
+      });
+      const res = await meDelete(req);
       expect(res.status).toBe(401);
     });
   });

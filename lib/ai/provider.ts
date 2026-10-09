@@ -7,7 +7,11 @@ import {
   generateText,
   APICallError,
   Output,
+  toTextStream,
+  toUIMessageStream,
+  createUIMessageStreamResponse,
   type LanguageModel,
+  type TextStreamPart,
 } from "ai";
 import { z } from "zod";
 import { getServerEnv } from "@/lib/env.server";
@@ -47,20 +51,26 @@ export type TutorMessage = {
   content: string;
 };
 
-export type TutorStreamResult = ReturnType<typeof streamText>;
+export interface TutorStreamResult {
+  stream: ReadableStream<TextStreamPart<any>>;
+  textStream: ReadableStream<string> & AsyncIterable<string>;
+  toUIMessageStreamResponse?: (options?: Record<string, unknown>) => Response;
+}
 
 export interface AIProviderInterface {
   streamTutor(
     messages: TutorMessage[],
     profileContext: string,
     style?: string,
-    onFinish?: (event: { text: string }) => Promise<void> | void
+    onFinish?: (event: { text: string }) => Promise<void> | void,
+    abortSignal?: AbortSignal
   ): Promise<TutorStreamResult>;
 
   generateStructured<T>(
     prompt: string,
     schema: z.ZodType<T, z.ZodTypeDef, unknown>,
-    systemPrompt?: string
+    systemPrompt?: string,
+    abortSignal?: AbortSignal
   ): Promise<T>;
 }
 
@@ -68,22 +78,29 @@ export interface AIProviderInterface {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-/**
- * Creates an AbortSignal that fires after `ms` milliseconds.
- */
-function timeoutSignal(ms: number = DEFAULT_TIMEOUT_MS): AbortSignal {
-  return AbortSignal.timeout(ms);
+function createCompositeSignal(
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  callerSignal?: AbortSignal
+): AbortSignal {
+  const timeoutSig = AbortSignal.timeout(timeoutMs);
+  if (!callerSignal) return timeoutSig;
+
+  const abortSignalConstructor = AbortSignal as unknown as {
+    any?: (signals: AbortSignal[]) => AbortSignal;
+  };
+  if (typeof abortSignalConstructor.any === "function") {
+    return abortSignalConstructor.any([timeoutSig, callerSignal]);
+  }
+
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  callerSignal.addEventListener("abort", onAbort, { once: true });
+  timeoutSig.addEventListener("abort", onAbort, { once: true });
+  return controller.signal;
 }
 
-/**
- * Classifies an error as rate-limit (429), timeout, or generic provider error.
- */
 export function classifyAndThrow(err: unknown, provider: string): never {
-  // AbortSignal.timeout throws a DOMException / TimeoutError
-  if (
-    err instanceof DOMException &&
-    err.name === "TimeoutError"
-  ) {
+  if (err instanceof DOMException && err.name === "TimeoutError") {
     throw new TimeoutError(`${provider} request timed out`, provider);
   }
 
@@ -96,9 +113,8 @@ export function classifyAndThrow(err: unknown, provider: string): never {
     }
   }
 
-  // String-based detection for non-APICallError or wrapped error messages
   const msg = err instanceof Error ? err.message : String(err);
-  if (msg.includes("429")) {
+  if (msg.includes("429") || msg.toLowerCase().includes("quota")) {
     throw new RateLimitError(`${provider} rate limit exceeded`, provider);
   }
 
@@ -106,19 +122,71 @@ export function classifyAndThrow(err: unknown, provider: string): never {
 }
 
 /**
- * Peek-validates a stream by consuming the very first chunk.
- * If the first chunk fails (provider error / empty stream), the error propagates
- * immediately so the caller can switch to the fallback.
+ * Buffers chunks from streamText until the first text-delta or error.
+ * If an error occurs or stream finishes without producing any text-delta, throws so fallback triggers.
+ * If successful, returns a reconstructed stream yielding all buffered chunks followed by remaining chunks.
  */
-export async function peekFirstChunk(result: TutorStreamResult): Promise<void> {
-  for await (const part of result.fullStream) {
-    if (part.type === "error") {
-      throw part.error;
-    }
-    if (part.type === "text-delta" || part.type === "finish") {
-      return;
+async function peekAndBufferStream(
+  streamResult: ReturnType<typeof streamText>
+): Promise<{
+  stream: ReadableStream<TextStreamPart<any>>;
+  textStream: ReadableStream<string> & AsyncIterable<string>;
+}> {
+  const reader = streamResult.stream.getReader();
+  const bufferedChunks: TextStreamPart<any>[] = [];
+  let foundFirstTextDelta = false;
+  let streamError: unknown = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value) {
+      bufferedChunks.push(value);
+      if (value.type === "error") {
+        streamError = (value as any).error;
+        break;
+      }
+      if (value.type === "text-delta") {
+        foundFirstTextDelta = true;
+        break;
+      }
     }
   }
+
+  if (!foundFirstTextDelta || streamError) {
+    await reader.cancel("Stream failed before first text-delta").catch(() => {});
+    throw streamError || new Error("Stream closed before first text-delta");
+  }
+
+  const combinedStream = new ReadableStream<TextStreamPart<any>>({
+    start(controller) {
+      for (const chunk of bufferedChunks) {
+        controller.enqueue(chunk);
+      }
+    },
+    async pull(controller) {
+      try {
+        const { value, done } = await reader.read();
+        if (done) {
+          controller.close();
+        } else {
+          controller.enqueue(value);
+        }
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+    cancel(reason) {
+      reader.cancel(reason);
+    },
+  });
+
+  const [streamForUI, streamForText] = combinedStream.tee();
+  return {
+    stream: streamForUI,
+    textStream: toTextStream({ stream: streamForText }) as ReadableStream<string> &
+      AsyncIterable<string>,
+  };
 }
 
 // ── CloudProvider ──────────────────────────────────────────────────────────────
@@ -126,7 +194,7 @@ export async function peekFirstChunk(result: TutorStreamResult): Promise<void> {
 export class CloudProvider implements AIProviderInterface {
   constructor(private customModel?: LanguageModel) {}
 
-  private getModel() {
+  private getModel(): LanguageModel {
     if (this.customModel) return this.customModel;
     const env = getServerEnv();
     return google(env.GEMINI_MODEL);
@@ -136,16 +204,19 @@ export class CloudProvider implements AIProviderInterface {
     messages: TutorMessage[],
     profileContext: string,
     style: string = "analogy",
-    onFinish?: (event: { text: string }) => Promise<void> | void
+    onFinish?: (event: { text: string }) => Promise<void> | void,
+    abortSignal?: AbortSignal
   ): Promise<TutorStreamResult> {
-    const system = buildSocraticTutorPrompt(profileContext, style);
+    const instructions = buildSocraticTutorPrompt(profileContext, style);
+    const signal = createCompositeSignal(DEFAULT_TIMEOUT_MS, abortSignal);
+
     const result = streamText({
       model: this.getModel(),
-      system,
+      instructions,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
       temperature: 0.7,
       maxRetries: 0,
-      abortSignal: timeoutSignal(),
+      abortSignal: signal,
       onFinish: onFinish
         ? async (event) => {
             await onFinish({ text: event.text });
@@ -153,21 +224,37 @@ export class CloudProvider implements AIProviderInterface {
         : undefined,
     });
 
-    return result;
+    const buffered = await peekAndBufferStream(result);
+
+    return {
+      stream: buffered.stream,
+      textStream: buffered.textStream,
+      toUIMessageStreamResponse: (options?: any) =>
+        createUIMessageStreamResponse({
+          stream: toUIMessageStream({
+            stream: buffered.stream,
+            ...options,
+          }),
+          headers: options?.headers,
+        }),
+    };
   }
 
   async generateStructured<T>(
     prompt: string,
     schema: z.ZodType<T, z.ZodTypeDef, unknown>,
-    systemPrompt?: string
+    systemPrompt?: string,
+    abortSignal?: AbortSignal
   ): Promise<T> {
+    const signal = createCompositeSignal(DEFAULT_TIMEOUT_MS, abortSignal);
+
     const { output } = await generateText({
       model: this.getModel(),
-      system: systemPrompt,
+      instructions: systemPrompt,
       prompt,
       temperature: 0.2,
       maxRetries: 0,
-      abortSignal: timeoutSignal(),
+      abortSignal: signal,
       output: Output.object({
         schema,
       }),
@@ -183,13 +270,13 @@ export class FallbackProvider implements AIProviderInterface {
   private primary: CloudProvider;
 
   constructor(
-    primaryModel?: LanguageModel,
+    private primaryModel?: LanguageModel,
     private fallbackModel?: LanguageModel
   ) {
     this.primary = new CloudProvider(primaryModel);
   }
 
-  private getGroqModel() {
+  private getGroqModel(): LanguageModel {
     if (this.fallbackModel) return this.fallbackModel;
     const env = getServerEnv();
     if (!env.GROQ_API_KEY) {
@@ -205,42 +292,62 @@ export class FallbackProvider implements AIProviderInterface {
     messages: TutorMessage[],
     profileContext: string,
     style: string = "analogy",
-    onFinish?: (event: { text: string }) => Promise<void> | void
+    onFinish?: (event: { text: string }) => Promise<void> | void,
+    abortSignal?: AbortSignal
   ): Promise<TutorStreamResult> {
-    try {
-      const result = await this.primary.streamTutor(
-        messages,
-        profileContext,
-        style,
-        onFinish
-      );
+    const instructions = buildSocraticTutorPrompt(profileContext, style);
+    const signal = createCompositeSignal(DEFAULT_TIMEOUT_MS, abortSignal);
 
-      // Peek-validate: consume first chunk to verify the stream is alive.
-      await peekFirstChunk(result);
-      return result;
+    // 1. Attempt primary stream with buffering
+    try {
+      const primaryResult = streamText({
+        model: this.primaryModel || google(getServerEnv().GEMINI_MODEL),
+        instructions,
+        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        temperature: 0.7,
+        maxRetries: 0,
+        abortSignal: signal,
+        onFinish: onFinish
+          ? async (event) => {
+              await onFinish({ text: event.text });
+            }
+          : undefined,
+      });
+
+      const buffered = await peekAndBufferStream(primaryResult);
+      return {
+        stream: buffered.stream,
+        textStream: buffered.textStream,
+        toUIMessageStreamResponse: (options?: any) =>
+          createUIMessageStreamResponse({
+            stream: toUIMessageStream({
+              stream: buffered.stream,
+              ...options,
+            }),
+            headers: options?.headers,
+          }),
+      };
     } catch (primaryErr: unknown) {
-      // Classify and wrap the primary error
-      let classified: Error;
+      let primaryClassified: Error;
       try {
         classifyAndThrow(primaryErr, "gemini");
       } catch (e) {
-        classified = e as Error;
+        primaryClassified = e as Error;
       }
 
       const env = getServerEnv();
       if (this.fallbackModel || env.GROQ_API_KEY) {
         try {
-          const system = buildSocraticTutorPrompt(profileContext, style);
-          const result = streamText({
+          const fallbackResult = streamText({
             model: this.getGroqModel(),
-            system,
+            instructions,
             messages: messages.map((m) => ({
               role: m.role,
               content: m.content,
             })),
             temperature: 0.7,
             maxRetries: 0,
-            abortSignal: timeoutSignal(),
+            abortSignal: signal,
             onFinish: onFinish
               ? async (event) => {
                   await onFinish({ text: event.text });
@@ -248,9 +355,19 @@ export class FallbackProvider implements AIProviderInterface {
               : undefined,
           });
 
-          // Peek-validate fallback stream too
-          await peekFirstChunk(result);
-          return result;
+          const bufferedFallback = await peekAndBufferStream(fallbackResult);
+          return {
+            stream: bufferedFallback.stream,
+            textStream: bufferedFallback.textStream,
+            toUIMessageStreamResponse: (options?: any) =>
+              createUIMessageStreamResponse({
+                stream: toUIMessageStream({
+                  stream: bufferedFallback.stream,
+                  ...options,
+                }),
+                headers: options?.headers,
+              }),
+          };
         } catch (fallbackErr: unknown) {
           throw new ProviderError(
             "Both primary and fallback AI providers failed streamTutor",
@@ -260,17 +377,18 @@ export class FallbackProvider implements AIProviderInterface {
         }
       }
 
-      throw classified!;
+      throw primaryClassified!;
     }
   }
 
   async generateStructured<T>(
     prompt: string,
     schema: z.ZodType<T, z.ZodTypeDef, unknown>,
-    systemPrompt?: string
+    systemPrompt?: string,
+    abortSignal?: AbortSignal
   ): Promise<T> {
     try {
-      return await this.primary.generateStructured(prompt, schema, systemPrompt);
+      return await this.primary.generateStructured(prompt, schema, systemPrompt, abortSignal);
     } catch (primaryErr: unknown) {
       let classified: Error;
       try {
@@ -282,13 +400,14 @@ export class FallbackProvider implements AIProviderInterface {
       const env = getServerEnv();
       if (this.fallbackModel || env.GROQ_API_KEY) {
         try {
+          const signal = createCompositeSignal(DEFAULT_TIMEOUT_MS, abortSignal);
           const { output } = await generateText({
             model: this.getGroqModel(),
-            system: systemPrompt,
+            instructions: systemPrompt,
             prompt,
             temperature: 0.2,
             maxRetries: 0,
-            abortSignal: timeoutSignal(),
+            abortSignal: signal,
             output: Output.object({
               schema,
             }),
@@ -320,9 +439,6 @@ export function getProvider(): AIProviderInterface {
   return activeProvider;
 }
 
-/**
- * Test helper: replace the active provider with a mock.
- */
 export function _setProvider(provider: AIProviderInterface | null): void {
   activeProvider = provider;
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { requireUser, apiError, handleRouteError } from "@/lib/api-helpers";
 
 export const runtime = "nodejs";
 
@@ -10,19 +11,11 @@ const deleteConversationSchema = z.object({
 
 export async function GET() {
   try {
+    const auth = await requireUser();
+    if (auth.error) return auth.error;
+    const user = auth.user;
+
     const supabase = await createClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized", code: "UNAUTHORIZED" },
-        { status: 401 }
-      );
-    }
-
     const { data: conversations, error } = await supabase
       .from("conversations")
       .select("id, title, topic_id, created_at, updated_at")
@@ -30,37 +23,20 @@ export async function GET() {
       .order("updated_at", { ascending: false });
 
     if (error) {
-      return NextResponse.json(
-        { error: "Failed to fetch conversations", code: "DATABASE_ERROR" },
-        { status: 500 }
-      );
+      return apiError("Failed to fetch conversations", "DATABASE_ERROR", 500);
     }
 
     return NextResponse.json({ conversations: conversations || [] });
   } catch (error: unknown) {
-    const err = error as Error;
-    console.error("[GET /api/conversations Error]:", err);
-    return NextResponse.json(
-      { error: err?.message || "Failed to list conversations", code: "INTERNAL_ERROR" },
-      { status: 500 }
-    );
+    return handleRouteError(error, "Failed to list conversations");
   }
 }
 
 export async function DELETE(request: Request) {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized", code: "UNAUTHORIZED" },
-        { status: 401 }
-      );
-    }
+    const auth = await requireUser();
+    if (auth.error) return auth.error;
+    const user = auth.user;
 
     const { searchParams } = new URL(request.url);
     const body = await request.json().catch(() => ({}));
@@ -68,12 +44,15 @@ export async function DELETE(request: Request) {
 
     const parsed = deleteConversationSchema.safeParse({ conversationId });
     if (!parsed.success) {
-      return NextResponse.json(
-        { error: "Invalid conversation ID", code: "VALIDATION_ERROR", details: parsed.error.flatten() },
-        { status: 400 }
+      return apiError(
+        "Invalid conversation ID",
+        "VALIDATION_ERROR",
+        400,
+        parsed.error.flatten()
       );
     }
 
+    const supabase = await createClient();
     const { error: deleteError } = await supabase
       .from("conversations")
       .delete()
@@ -81,19 +60,11 @@ export async function DELETE(request: Request) {
       .eq("user_id", user.id);
 
     if (deleteError) {
-      return NextResponse.json(
-        { error: "Failed to delete conversation", code: "DATABASE_ERROR" },
-        { status: 500 }
-      );
+      return apiError("Failed to delete conversation", "DATABASE_ERROR", 500);
     }
 
     return NextResponse.json({ success: true, deletedId: parsed.data.conversationId });
   } catch (error: unknown) {
-    const err = error as Error;
-    console.error("[DELETE /api/conversations Error]:", err);
-    return NextResponse.json(
-      { error: err?.message || "Failed to delete conversation", code: "INTERNAL_ERROR" },
-      { status: 500 }
-    );
+    return handleRouteError(error, "Failed to delete conversation");
   }
 }

@@ -167,7 +167,7 @@ export function Navbar() {
             </div>
           ) : (
             <Link
-              href="/auth/signin"
+              href="/login"
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs sm:text-sm font-medium text-primary-foreground shadow-sm shadow-primary/30 transition hover:bg-primary/90"
             >
               <Sparkles className="h-3.5 w-3.5" />
