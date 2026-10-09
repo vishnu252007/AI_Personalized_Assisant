@@ -8,8 +8,29 @@ import {
   Trash2,
   CheckCircle2,
   AlertTriangle,
+  Eye,
+  Brain,
+  Sliders,
+  Type,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+
+interface LearnerInsights {
+  adaptationSummary: string;
+  traits: {
+    preferredDepth: string;
+    preferredLength: string;
+    preferredStyle: string;
+    pace: string;
+    persistenceScore: number;
+    dailyGoalMinutes: number;
+    depthDescription: string;
+    styleDescription: string;
+    paceDescription: string;
+  };
+  strengths: Array<{ name: string; stage: string }>;
+  weaknesses: Array<{ name: string; stage: string }>;
+}
 
 export default function SettingsPage() {
   const [userId, setUserId] = React.useState<string>("");
@@ -19,6 +40,14 @@ export default function SettingsPage() {
   const [saving, setSaving] = React.useState(false);
   const [savedSuccess, setSavedSuccess] = React.useState(false);
 
+  // Accessibility State
+  const [dyslexicFont, setDyslexicFont] = React.useState(false);
+  const [largeText, setLargeText] = React.useState(false);
+
+  // Learner Insights State
+  const [insights, setInsights] = React.useState<LearnerInsights | null>(null);
+  const [loadingInsights, setLoadingInsights] = React.useState(false);
+
   // Delete modal state
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [confirmInput, setConfirmInput] = React.useState("");
@@ -26,6 +55,17 @@ export default function SettingsPage() {
   const [deleteError, setDeleteError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
+    // 1. Initialize accessibility from localStorage
+    try {
+      const isDyslexic = localStorage.getItem("learnai_dyslexic") === "true";
+      const isLarge = localStorage.getItem("learnai_large_text") === "true";
+      setDyslexicFont(isDyslexic);
+      setLargeText(isLarge);
+    } catch {
+      // Ignored
+    }
+
+    // 2. Load auth & user profile
     const supabase = createClient();
     supabase.auth.getUser().then(({ data }) => {
       if (data?.user) {
@@ -43,9 +83,49 @@ export default function SettingsPage() {
               if (profile.preferred_style) setPreferredStyle(profile.preferred_style);
             }
           });
+
+        // 3. Load learner transparency insights
+        setLoadingInsights(true);
+        fetch("/api/profile/insights")
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (data) setInsights(data);
+          })
+          .catch(() => {})
+          .finally(() => setLoadingInsights(false));
       }
     });
   }, []);
+
+  const toggleDyslexicFont = () => {
+    const nextVal = !dyslexicFont;
+    setDyslexicFont(nextVal);
+    try {
+      localStorage.setItem("learnai_dyslexic", String(nextVal));
+      if (nextVal) {
+        document.body.classList.add("dyslexic-font");
+      } else {
+        document.body.classList.remove("dyslexic-font");
+      }
+    } catch {
+      // Ignored
+    }
+  };
+
+  const toggleLargeText = () => {
+    const nextVal = !largeText;
+    setLargeText(nextVal);
+    try {
+      localStorage.setItem("learnai_large_text", String(nextVal));
+      if (nextVal) {
+        document.body.classList.add("large-text");
+      } else {
+        document.body.classList.remove("large-text");
+      }
+    } catch {
+      // Ignored
+    }
+  };
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -104,14 +184,149 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground flex items-center gap-2.5">
           <Settings className="h-7 w-7 text-primary" />
-          <span>Settings & Privacy Controls</span>
+          <span>Settings & Adaptivity Controls</span>
         </h1>
         <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-          Manage your learning style preference and exercise full GDPR data ownership
+          Accessibility preferences, cognitive model transparency, and GDPR data ownership
         </p>
       </div>
 
-      {/* Profile Preferences */}
+      {/* ── SECTION 1: ACCESSIBILITY PREFERENCES ────────────────────────────── */}
+      <div className="rounded-2xl border border-border bg-card/60 p-6 sm:p-8 space-y-6 shadow-md backdrop-blur-md">
+        <div className="flex items-center gap-2 border-b border-border/60 pb-4">
+          <Eye className="h-5 w-5 text-primary" />
+          <h2 className="text-base font-bold text-foreground">Accessibility & Readability</h2>
+        </div>
+
+        <div className="space-y-4">
+          {/* Dyslexia-Friendly Font Toggle */}
+          <div className="flex items-center justify-between p-3.5 rounded-xl border border-border/80 bg-background/50">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <Type className="h-4 w-4 text-primary" />
+                <span className="text-xs font-semibold text-foreground">
+                  Dyslexia-Friendly Font
+                </span>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Enhances letter differentiation, character spacing, and line height to minimize reading fatigue.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={toggleDyslexicFont}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                dyslexicFont ? "bg-primary" : "bg-muted"
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition duration-200 ease-in-out ${
+                  dyslexicFont ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Large Text Mode Toggle */}
+          <div className="flex items-center justify-between p-3.5 rounded-xl border border-border/80 bg-background/50">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <Sliders className="h-4 w-4 text-primary" />
+                <span className="text-xs font-semibold text-foreground">
+                  High-Comfort Large Text
+                </span>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Increases base typography scale for higher contrast and effortless reading on mobile & desktop.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={toggleLargeText}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                largeText ? "bg-primary" : "bg-muted"
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition duration-200 ease-in-out ${
+                  largeText ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── SECTION 2: HOW THE TUTOR ADAPTS TO YOU (TRANSPARENCY CARD) ────────── */}
+      <div className="rounded-2xl border border-primary/20 bg-primary/5 p-6 sm:p-8 space-y-6 shadow-md backdrop-blur-md">
+        <div className="flex items-center justify-between border-b border-primary/10 pb-4">
+          <div className="flex items-center gap-2">
+            <Brain className="h-5 w-5 text-primary" />
+            <h2 className="text-base font-bold text-foreground">
+              How the Tutor Adapts to You (Cognitive Model)
+            </h2>
+          </div>
+          <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[10px] font-semibold text-primary">
+            Bayesian Calibrated
+          </span>
+        </div>
+
+        {loadingInsights ? (
+          <div className="py-6 text-center text-xs text-muted-foreground">
+            Loading cognitive profile insights...
+          </div>
+        ) : insights ? (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-border/80 bg-card/80 p-4 text-xs text-foreground leading-relaxed">
+              <p className="font-medium text-foreground">{insights.adaptationSummary}</p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="rounded-xl border border-border/70 bg-card/50 p-3.5 space-y-1">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground block">
+                  Explanation Depth
+                </span>
+                <span className="text-xs font-bold text-primary block">
+                  {insights.traits.depthDescription}
+                </span>
+              </div>
+
+              <div className="rounded-xl border border-border/70 bg-card/50 p-3.5 space-y-1">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground block">
+                  Teaching Modality
+                </span>
+                <span className="text-xs font-bold text-primary block">
+                  {insights.traits.styleDescription}
+                </span>
+              </div>
+
+              <div className="rounded-xl border border-border/70 bg-card/50 p-3.5 space-y-1">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground block">
+                  Curriculum Pace
+                </span>
+                <span className="text-xs font-bold text-primary block">
+                  {insights.traits.paceDescription}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-1">
+              <span>
+                🎯 Daily Mastery Goal: <strong>{insights.traits.dailyGoalMinutes} mins/day</strong>
+              </span>
+              <span>
+                Mastered: <strong className="text-emerald-500">{insights.strengths.length}</strong> | In Progress: <strong className="text-amber-500">{insights.weaknesses.length}</strong>
+              </span>
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Complete your first Socratic chat or practice quiz to populate your personalized cognitive profile.
+          </p>
+        )}
+      </div>
+
+      {/* ── SECTION 3: LEARNER PROFILE PREFERENCES ──────────────────────────── */}
       <div className="rounded-2xl border border-border bg-card/60 p-6 sm:p-8 space-y-6 shadow-md backdrop-blur-md">
         <div className="flex items-center gap-2 border-b border-border/60 pb-4">
           <User className="h-5 w-5 text-primary" />
@@ -148,7 +363,7 @@ export default function SettingsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">
-                Mastery Difficulty Level
+                Mastery Difficulty Baseline
               </label>
               <select
                 value={level}
@@ -197,7 +412,7 @@ export default function SettingsPage() {
         </form>
       </div>
 
-      {/* Privacy Guarantee & Permanent Data Purge */}
+      {/* ── SECTION 4: PRIVACY GUARANTEE & GDPR DATA PURGE ───────────────────── */}
       <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-6 sm:p-8 space-y-4">
         <div className="flex items-center gap-2">
           <ShieldAlert className="h-5 w-5 text-destructive" />

@@ -111,4 +111,49 @@ describe("Route Handlers Security & Validation", () => {
       expect(res.status).toBe(401);
     });
   });
+
+  describe("POST /api/chat/feedback", () => {
+    it("returns 401 Unauthorized when unauthenticated", async () => {
+      const { POST: feedbackPost } = await import("@/app/api/chat/feedback/route");
+      const req = new Request("http://localhost:3000/api/chat/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback: "too_hard" }),
+      });
+      const res = await feedbackPost(req);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe("GET & POST /api/plan/today", () => {
+    it("returns 401 Unauthorized when unauthenticated for GET", async () => {
+      const { GET: planGet } = await import("@/app/api/plan/today/route");
+      const req = new Request("http://localhost:3000/api/plan/today");
+      const res = await planGet(req);
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 401 Unauthorized when unauthenticated for POST", async () => {
+      const { POST: planPost } = await import("@/app/api/plan/today/route");
+      const req = new Request("http://localhost:3000/api/plan/today", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conceptName: "Binary Trees",
+          conceptSlug: "trees-traversal",
+          reason: "Reinforce recursion basics",
+        }),
+      });
+      const res = await planPost(req);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe("GET /api/profile/insights", () => {
+    it("returns 401 Unauthorized when unauthenticated", async () => {
+      const { GET: insightsGet } = await import("@/app/api/profile/insights/route");
+      const res = await insightsGet();
+      expect(res.status).toBe(401);
+    });
+  });
 });

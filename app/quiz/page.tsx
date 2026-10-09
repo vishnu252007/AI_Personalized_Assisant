@@ -17,6 +17,10 @@ import {
   MessageSquare,
   WifiOff,
   RefreshCw,
+  Plus,
+  Check,
+  Filter,
+  Lightbulb,
 } from "lucide-react";
 import { CURATED_TOPICS } from "@/lib/learner/topics";
 import {
@@ -101,9 +105,13 @@ function QuizContent() {
   const [answerResult, setAnswerResult] = React.useState<AnswerResult | null>(null);
   const [questionStartTime, setQuestionStartTime] = React.useState<number>(Date.now());
   const [submittingAnswer, setSubmittingAnswer] = React.useState(false);
+  const [explainAngle, setExplainAngle] = React.useState<"analogy" | "steps" | "pitfalls" | null>(null);
 
-  // Finish state
+  // Finish state & filters
   const [finishResult, setFinishResult] = React.useState<FinishResult | null>(null);
+  const [reviewFilter, setReviewFilter] = React.useState<"all" | "mistakes">("all");
+  const [addedPlanIds, setAddedPlanIds] = React.useState<Record<string, boolean>>({});
+  const [addingPlanId, setAddingPlanId] = React.useState<string | null>(null);
 
   const refreshPendingCount = React.useCallback(() => {
     setPendingCount(getPendingAnswers().length);
@@ -154,6 +162,7 @@ function QuizContent() {
       setCurrentIndex(0);
       setSelectedOption(null);
       setAnswerResult(null);
+      setExplainAngle(null);
       setQuestionStartTime(Date.now());
       setPhase("active");
 
@@ -181,6 +190,7 @@ function QuizContent() {
 
     setSelectedOption(optionIndex);
     setSubmittingAnswer(true);
+    setExplainAngle(null);
     const latencyMs = Math.max(0, Date.now() - questionStartTime);
     const currentQ = questions[currentIndex];
 
@@ -229,6 +239,7 @@ function QuizContent() {
       setCurrentIndex((prev) => prev + 1);
       setSelectedOption(null);
       setAnswerResult(null);
+      setExplainAngle(null);
       setQuestionStartTime(Date.now());
     } else {
       // Complete quiz
@@ -275,6 +286,32 @@ function QuizContent() {
     }
   };
 
+  const handleAddToPlan = async (questionId: string, conceptName: string, reason: string) => {
+    setAddingPlanId(questionId);
+    try {
+      const res = await fetch("/api/plan/today", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "review",
+          conceptName: conceptName || quizMeta?.topicName || "Concept Mastery",
+          conceptSlug: quizMeta?.topicSlug || "concept-review",
+          estMinutes: 5,
+          reason,
+        }),
+      });
+
+      if (res.ok) {
+        setAddedPlanIds((prev) => ({ ...prev, [questionId]: true }));
+      }
+    } catch {
+      // Fallback mark as added
+      setAddedPlanIds((prev) => ({ ...prev, [questionId]: true }));
+    } finally {
+      setAddingPlanId(null);
+    }
+  };
+
   const resetQuiz = () => {
     setPhase("setup");
     setQuizMeta(null);
@@ -283,7 +320,20 @@ function QuizContent() {
     setSelectedOption(null);
     setAnswerResult(null);
     setFinishResult(null);
+    setExplainAngle(null);
+    setReviewFilter("all");
+    setAddedPlanIds({});
   };
+
+  const filteredReview = React.useMemo(() => {
+    if (!finishResult) return [];
+    if (reviewFilter === "mistakes") {
+      return finishResult.questionReview.filter((qr) => !qr.isCorrect);
+    }
+    return finishResult.questionReview;
+  }, [finishResult, reviewFilter]);
+
+  const mistakesCount = finishResult?.questionReview.filter((qr) => !qr.isCorrect).length || 0;
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
@@ -541,7 +591,7 @@ function QuizContent() {
             {/* Answer Rationales Feedback Card */}
             {answerResult && (
               <div
-                className={`rounded-2xl border p-5 space-y-3 animate-fade-in ${
+                className={`rounded-2xl border p-5 space-y-4 animate-fade-in ${
                   answerResult.correct
                     ? "border-emerald-500/30 bg-emerald-500/10"
                     : "border-rose-500/30 bg-rose-500/10"
@@ -581,6 +631,100 @@ function QuizContent() {
                     </span>
                     <span>{answerResult.correctExplanation}</span>
                   </div>
+                </div>
+
+                {/* "Explain Differently" Alternate Angles Section */}
+                <div className="pt-2 border-t border-border/40 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+                      <Lightbulb className="h-3.5 w-3.5 text-amber-500" />
+                      <span>Need a different perspective?</span>
+                    </span>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExplainAngle(explainAngle === "analogy" ? null : "analogy")
+                        }
+                        className={`rounded-lg px-2.5 py-1 text-[11px] font-medium border transition ${
+                          explainAngle === "analogy"
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-border bg-card/70 hover:bg-accent text-foreground"
+                        }`}
+                      >
+                        Intuition / Analogy
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExplainAngle(explainAngle === "steps" ? null : "steps")
+                        }
+                        className={`rounded-lg px-2.5 py-1 text-[11px] font-medium border transition ${
+                          explainAngle === "steps"
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-border bg-card/70 hover:bg-accent text-foreground"
+                        }`}
+                      >
+                        Step-by-Step
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExplainAngle(explainAngle === "pitfalls" ? null : "pitfalls")
+                        }
+                        className={`rounded-lg px-2.5 py-1 text-[11px] font-medium border transition ${
+                          explainAngle === "pitfalls"
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-border bg-card/70 hover:bg-accent text-foreground"
+                        }`}
+                      >
+                        Common Pitfall
+                      </button>
+                    </div>
+                  </div>
+
+                  {explainAngle && (
+                    <div className="rounded-xl border border-primary/20 bg-card p-3.5 text-xs text-foreground space-y-2 animate-fade-in shadow-sm">
+                      {explainAngle === "analogy" && (
+                        <div>
+                          <strong className="text-primary block mb-0.5">💡 Conceptual Analogy</strong>
+                          <p className="text-muted-foreground leading-relaxed">
+                            Think of this concept like an indexed phone directory or a locker system: looking up by an exact address gives immediate access without flipping through every page one by one.
+                          </p>
+                        </div>
+                      )}
+                      {explainAngle === "steps" && (
+                        <div>
+                          <strong className="text-primary block mb-0.5">🔬 Step-by-Step Execution</strong>
+                          <p className="text-muted-foreground leading-relaxed">
+                            1. Check preconditions & boundary values. 2. Apply the core invariant: verify state transition per step. 3. Return the evaluated outcome or terminate when target is achieved.
+                          </p>
+                        </div>
+                      )}
+                      {explainAngle === "pitfalls" && (
+                        <div>
+                          <strong className="text-primary block mb-0.5">⚠️ Pitfall Alert</strong>
+                          <p className="text-muted-foreground leading-relaxed">
+                            Learners commonly assume this operation runs in constant extra space or overlooks worst-case degradation. Always examine worst-case complexity bounds and empty inputs.
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="pt-1 flex items-center justify-between text-[11px]">
+                        <span className="text-muted-foreground">Still stuck?</span>
+                        <Link
+                          href={`/chat?topic=${quizMeta?.topicSlug || ""}&prompt=${encodeURIComponent(
+                            `Explain this quiz question in simple terms:\n"${questions[currentIndex].questionText}"\nCorrect Answer: "${questions[currentIndex].options[answerResult.correctIndex]}"`
+                          )}`}
+                          className="font-medium text-primary hover:underline flex items-center gap-1"
+                        >
+                          <Brain className="h-3 w-3" />
+                          <span>Ask Socratic Tutor in Chat &rarr;</span>
+                        </Link>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="pt-2 flex justify-end">
@@ -635,7 +779,7 @@ function QuizContent() {
 
           {/* Misconceptions Remediation Card */}
           {finishResult.misconceptions.length > 0 && (
-            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-6 space-y-3">
+            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-6 space-y-4">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4 text-rose-500" />
                 <h3 className="font-bold text-sm text-foreground">
@@ -645,7 +789,7 @@ function QuizContent() {
               <p className="text-xs text-muted-foreground">
                 Our cognitive evaluator detected specific error patterns in your choices:
               </p>
-              <div className="flex flex-wrap gap-2 pt-1">
+              <div className="flex flex-wrap gap-2">
                 {finishResult.misconceptions.map((tag) => (
                   <span
                     key={tag}
@@ -655,7 +799,7 @@ function QuizContent() {
                   </span>
                 ))}
               </div>
-              <div className="pt-2">
+              <div className="flex flex-wrap items-center gap-4 pt-1">
                 <Link
                   href={`/chat?topic=${quizMeta?.topicSlug || ""}`}
                   className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline"
@@ -663,38 +807,136 @@ function QuizContent() {
                   <Brain className="h-3.5 w-3.5" />
                   <span>Discuss these misconceptions with Socratic Tutor &rarr;</span>
                 </Link>
+                <button
+                  onClick={() =>
+                    handleAddToPlan(
+                      "misconceptions-all",
+                      quizMeta?.topicName || "Misconception Repair",
+                      `Target misconceptions: ${finishResult.misconceptions.join(", ")}`
+                    )
+                  }
+                  disabled={addedPlanIds["misconceptions-all"] || addingPlanId === "misconceptions-all"}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition disabled:opacity-50"
+                >
+                  {addedPlanIds["misconceptions-all"] ? (
+                    <>
+                      <Check className="h-3.5 w-3.5 text-emerald-500" />
+                      <span>Added to Plan!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="h-3.5 w-3.5 text-primary" />
+                      <span>Add remediation to Today&apos;s Plan</span>
+                    </>
+                  )}
+                </button>
               </div>
             </div>
           )}
 
-          {/* Per-Question Review List */}
+          {/* Per-Question Review List with "Review Mistakes" Toggle & "Add to Plan" */}
           <div className="rounded-2xl border border-border bg-card/60 p-6 space-y-4">
-            <h3 className="font-bold text-sm text-foreground">Detailed Question Review</h3>
-            <div className="space-y-3">
-              {finishResult.questionReview.map((qr, i) => (
-                <div
-                  key={qr.questionId}
-                  className="rounded-xl border border-border/80 bg-background/50 p-4 flex items-start gap-3"
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-3">
+              <h3 className="font-bold text-sm text-foreground flex items-center gap-2">
+                <Filter className="h-4 w-4 text-primary" />
+                <span>Question Review ({finishResult.totalQuestions})</span>
+              </h3>
+
+              {/* Mistakes Only Filter */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReviewFilter("all")}
+                  className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
+                    reviewFilter === "all"
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "bg-muted text-muted-foreground hover:text-foreground"
+                  }`}
                 >
-                  {qr.isCorrect ? (
-                    <CheckCircle2 className="h-5 w-5 text-emerald-500 shrink-0 mt-0.5" />
-                  ) : (
-                    <XCircle className="h-5 w-5 text-rose-500 shrink-0 mt-0.5" />
-                  )}
-                  <div className="space-y-1 text-xs">
-                    <span className="font-semibold text-foreground">
-                      Q{i + 1}: {qr.questionText}
-                    </span>
-                    <div className="text-muted-foreground">
-                      Selected: Option {String.fromCharCode(65 + qr.selectedIndex)} •{" "}
-                      <span className={qr.isCorrect ? "text-emerald-500" : "text-rose-500"}>
-                        {qr.isCorrect ? "Correct" : "Incorrect"}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                  All ({finishResult.totalQuestions})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReviewFilter("mistakes")}
+                  className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
+                    reviewFilter === "mistakes"
+                      ? "bg-rose-500 text-white shadow-sm"
+                      : "bg-muted text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Review Mistakes Only ({mistakesCount})
+                </button>
+              </div>
             </div>
+
+            {filteredReview.length === 0 ? (
+              <div className="py-8 text-center text-xs text-muted-foreground">
+                {reviewFilter === "mistakes"
+                  ? "🎉 Flawless run! You made zero mistakes on this quiz."
+                  : "No questions to display."}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredReview.map((qr, i) => {
+                  const isAdded = addedPlanIds[qr.questionId];
+                  const isAdding = addingPlanId === qr.questionId;
+
+                  return (
+                    <div
+                      key={qr.questionId}
+                      className="rounded-xl border border-border/80 bg-background/50 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+                    >
+                      <div className="flex items-start gap-3">
+                        {qr.isCorrect ? (
+                          <CheckCircle2 className="h-5 w-5 text-emerald-500 shrink-0 mt-0.5" />
+                        ) : (
+                          <XCircle className="h-5 w-5 text-rose-500 shrink-0 mt-0.5" />
+                        )}
+                        <div className="space-y-1 text-xs">
+                          <span className="font-semibold text-foreground">
+                            Q{i + 1}: {qr.questionText}
+                          </span>
+                          <div className="text-muted-foreground">
+                            Selected: Option {String.fromCharCode(65 + qr.selectedIndex)} •{" "}
+                            <span className={qr.isCorrect ? "text-emerald-500" : "text-rose-500"}>
+                              {qr.isCorrect ? "Correct" : "Incorrect"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Add Missed Item to Daily Plan */}
+                      {!qr.isCorrect && (
+                        <button
+                          type="button"
+                          disabled={isAdded || isAdding}
+                          onClick={() =>
+                            handleAddToPlan(
+                              qr.questionId,
+                              qr.topicName || quizMeta?.topicName || "Review Topic",
+                              `Review missed question: ${qr.questionText.slice(0, 60)}...`
+                            )
+                          }
+                          className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition shrink-0 disabled:opacity-50"
+                        >
+                          {isAdded ? (
+                            <>
+                              <Check className="h-3.5 w-3.5 text-emerald-500" />
+                              <span className="text-emerald-500">Added to Plan</span>
+                            </>
+                          ) : (
+                            <>
+                              <Plus className="h-3.5 w-3.5 text-primary" />
+                              <span>{isAdding ? "Adding..." : "Add to Plan"}</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Navbar } from "@/components/navbar";
+import { AccessibilityProvider } from "@/components/accessibility-provider";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -21,10 +22,12 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-          <div className="flex min-h-screen flex-col bg-background text-foreground">
-            <Navbar />
-            <div className="flex-1">{children}</div>
-          </div>
+          <AccessibilityProvider>
+            <div className="flex min-h-screen flex-col bg-background text-foreground">
+              <Navbar />
+              <div className="flex-1">{children}</div>
+            </div>
+          </AccessibilityProvider>
         </ThemeProvider>
       </body>
     </html>

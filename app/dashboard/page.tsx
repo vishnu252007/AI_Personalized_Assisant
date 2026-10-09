@@ -3,16 +3,15 @@
 import * as React from "react";
 import Link from "next/link";
 import {
-  TrendingUp,
   Brain,
   Clock,
-  AlertTriangle,
   Zap,
-  ArrowRight,
   RefreshCw,
-  BookOpen,
   Sparkles,
   Award,
+  CalendarCheck,
+  CheckCircle2,
+  Sliders,
 } from "lucide-react";
 import {
   LineChart,
@@ -25,6 +24,17 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
+
+interface PlanItem {
+  id: string;
+  type: "review" | "micro_lesson" | "practice" | "reflect";
+  topicId: string | null;
+  conceptName: string;
+  conceptSlug: string;
+  estMinutes: number;
+  status: "pending" | "completed" | "skipped";
+  reason: string;
+}
 
 interface DashboardData {
   summary: {
@@ -69,18 +79,40 @@ interface DashboardData {
   };
 }
 
+interface ProfileInsights {
+  adaptationSummary: string;
+  traits: {
+    depthDescription: string;
+    styleDescription: string;
+    paceDescription: string;
+  };
+}
+
 export default function DashboardPage() {
   const [data, setData] = React.useState<DashboardData | null>(null);
+  const [planItems, setPlanItems] = React.useState<PlanItem[]>([]);
+  const [insights, setInsights] = React.useState<ProfileInsights | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+
+  // Time-travel demo slider state (Day 1 to Day 7)
+  const [demoDay, setDemoDay] = React.useState<number>(7);
 
   const fetchDashboard = React.useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/dashboard");
-      if (res.status === 401) {
-        // Unauthenticated demo fallback view
+      const [dashRes, planRes, insightsRes] = await Promise.all([
+        fetch("/api/dashboard"),
+        fetch("/api/plan/today"),
+        fetch("/api/profile/insights"),
+      ]);
+
+      if (dashRes.ok) {
+        const d = await dashRes.json();
+        setData(d);
+      } else {
+        // Fallback demo data
         setData({
           summary: {
             trackedTopics: 14,
@@ -99,7 +131,7 @@ export default function DashboardPage() {
               effectiveMastery: 0.78,
               halfLifeDays: 8.5,
               attemptsCount: 8,
-              state: "in_progress",
+              state: "mastered",
               misconceptions: { "off-by-one": 1 },
             },
             {
@@ -117,70 +149,99 @@ export default function DashboardPage() {
             },
             {
               topicId: "3",
-              topicSlug: "binary-search",
-              topicName: "Binary Search",
+              topicSlug: "sliding-window",
+              topicName: "Sliding Window",
               difficultyLevel: 2,
-              masteryScore: 0.6,
-              retentionProbability: 0.58,
-              effectiveMastery: 0.35,
-              halfLifeDays: 2.1,
-              attemptsCount: 5,
+              masteryScore: 0.55,
+              retentionProbability: 0.45,
+              effectiveMastery: 0.25,
+              halfLifeDays: 1.8,
+              attemptsCount: 4,
               state: "in_progress",
-              misconceptions: { "midpoint-overflow": 2, "boundary-condition": 1 },
+              misconceptions: { "shrink-condition": 2 },
             },
           ],
           reviewQueue: [
             {
               topicId: "3",
-              topicSlug: "binary-search",
-              topicName: "Binary Search",
-              retentionProbability: 0.58,
-              masteryScore: 0.6,
-            },
-            {
-              topicId: "2",
-              topicSlug: "two-pointers",
-              topicName: "Two Pointers",
-              retentionProbability: 0.65,
-              masteryScore: 0.7,
+              topicSlug: "sliding-window",
+              topicName: "Sliding Window",
+              retentionProbability: 0.45,
+              masteryScore: 0.55,
             },
           ],
           weakTopics: [
             {
               topicId: "3",
-              topicSlug: "binary-search",
-              topicName: "Binary Search",
-              effectiveMastery: 0.35,
-              attemptsCount: 5,
+              topicSlug: "sliding-window",
+              topicName: "Sliding Window",
+              effectiveMastery: 0.25,
+              attemptsCount: 4,
             },
           ],
           misconceptionCounts: {
             "pointer-boundary": 2,
-            "midpoint-overflow": 2,
-            "boundary-condition": 1,
+            "shrink-condition": 2,
             "off-by-one": 1,
           },
           scoreTrendSeries: [
             { window: 1, accuracy: 60 },
-            { window: 2, accuracy: 80 },
+            { window: 2, accuracy: 75 },
+            { window: 3, accuracy: 82 },
           ],
           studyNext: {
-            slug: "binary-search",
-            name: "Binary Search",
-            reason: "Memory retention below 80% — due for review",
+            slug: "sliding-window",
+            name: "Sliding Window",
+            reason: "Retention dropped to 45% — spaced recall due",
           },
         });
-        return;
       }
 
-      if (!res.ok) {
-        throw new Error("Failed to load dashboard metrics");
+      if (planRes.ok) {
+        const p = await planRes.json();
+        setPlanItems(p.items || []);
+      } else {
+        // Fallback default plan
+        setPlanItems([
+          {
+            id: "demo-1",
+            type: "review",
+            topicId: null,
+            conceptName: "Sliding Window",
+            conceptSlug: "sliding-window",
+            estMinutes: 5,
+            status: "pending",
+            reason: "Retention calculated at 45%. Spaced recall keeps this durable.",
+          },
+          {
+            id: "demo-2",
+            type: "practice",
+            topicId: null,
+            conceptName: "Two Pointers",
+            conceptSlug: "two-pointers",
+            estMinutes: 7,
+            status: "pending",
+            reason: "Active developing area. Targeted practice solidifies boundary cases.",
+          },
+          {
+            id: "demo-3",
+            type: "micro_lesson",
+            topicId: null,
+            conceptName: "Linked Lists",
+            conceptSlug: "linked-lists",
+            estMinutes: 6,
+            status: "pending",
+            reason: "Next conceptual milestone in your curriculum path.",
+          },
+        ]);
       }
 
-      const json = await res.json();
-      setData(json);
+      if (insightsRes.ok) {
+        const ins = await insightsRes.json();
+        setInsights(ins);
+      }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "An error occurred");
+      setError(err instanceof Error ? err.message : "Error loading dashboard");
     } finally {
       setLoading(false);
     }
@@ -190,12 +251,36 @@ export default function DashboardPage() {
     fetchDashboard();
   }, [fetchDashboard]);
 
-  if (loading && !data) {
+  const handleCompletePlanItem = async (itemId: string) => {
+    setPlanItems((prev) =>
+      prev.map((item) => (item.id === itemId ? { ...item, status: "completed" } : item))
+    );
+    try {
+      await fetch(`/api/plan/items/${itemId}/complete`, { method: "POST" });
+    } catch {
+      // Ignored
+    }
+  };
+
+  const handleSkipPlanItem = async (itemId: string) => {
+    setPlanItems((prev) =>
+      prev.map((item) => (item.id === itemId ? { ...item, status: "skipped" } : item))
+    );
+    try {
+      await fetch(`/api/plan/items/${itemId}/skip`, { method: "POST" });
+    } catch {
+      // Ignored
+    }
+  };
+
+  if (loading) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center">
+      <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
         <div className="flex flex-col items-center gap-3">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <p className="text-sm text-muted-foreground">Calculating cognitive retention metrics...</p>
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <span className="text-sm font-medium text-muted-foreground">
+            Calculating Elo mastery & spaced repetition curves...
+          </span>
         </div>
       </div>
     );
@@ -216,16 +301,16 @@ export default function DashboardPage() {
   }));
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 space-y-8">
+    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 space-y-8 pb-20 md:pb-8">
       {/* Header & Refresh */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground flex items-center gap-2.5">
-            <TrendingUp className="h-7 w-7 text-primary" />
-            <span>Learner Cognitive Dashboard</span>
+            <CalendarCheck className="h-7 w-7 text-primary" />
+            <span>Today&apos;s Plan & Progress</span>
           </h1>
           <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-            Real-time Elo mastery modeling, Ebbinghaus forgetting curves, and Bayesian style feedback
+            Personalized daily learning path calibrated by cognitive state & Ebbinghaus retention
           </p>
         </div>
 
@@ -242,7 +327,7 @@ export default function DashboardPage() {
             className="flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 transition"
           >
             <Zap className="h-3.5 w-3.5" />
-            <span>New Quiz</span>
+            <span>Quick Practice</span>
           </Link>
         </div>
       </div>
@@ -253,170 +338,240 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Recommended "Study Next" Banner */}
-      {data?.studyNext && (
-        <div className="rounded-2xl border border-primary/30 bg-gradient-to-r from-blue-500/10 via-indigo-500/10 to-purple-500/10 p-5 sm:p-6 backdrop-blur-md flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      {/* ── SECTION 1: TODAY'S ADAPTIVE PLAN ─────────────────────────────── */}
+      <div className="rounded-3xl border border-primary/20 bg-card/70 p-6 sm:p-8 backdrop-blur-md shadow-xl space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border/60 pb-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-primary" />
               <span className="text-xs font-semibold uppercase tracking-wider text-primary">
-                Smart Recommendation
+                Daily Learning Queue
               </span>
             </div>
             <h2 className="text-lg font-bold text-foreground">
-              {data.studyNext.name}
+              Today&apos;s Targeted Tasks ({planItems.filter((i) => i.status !== "completed").length} remaining)
             </h2>
-            <p className="text-xs sm:text-sm text-muted-foreground">
-              {data.studyNext.reason}
+          </div>
+          <span className="rounded-full bg-primary/10 border border-primary/20 px-3 py-1 text-xs font-bold text-primary w-fit">
+            Est. Time: {planItems.filter((i) => i.status === "pending").reduce((a, b) => a + b.estMinutes, 0)} mins
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {planItems.map((item) => {
+            const isCompleted = item.status === "completed";
+            const isSkipped = item.status === "skipped";
+
+            const badgeColor =
+              item.type === "review"
+                ? "bg-amber-500/10 text-amber-500 border-amber-500/20"
+                : item.type === "practice"
+                ? "bg-blue-500/10 text-blue-500 border-blue-500/20"
+                : item.type === "micro_lesson"
+                ? "bg-indigo-500/10 text-indigo-500 border-indigo-500/20"
+                : "bg-purple-500/10 text-purple-500 border-purple-500/20";
+
+            return (
+              <div
+                key={item.id}
+                className={`rounded-2xl border p-5 flex flex-col justify-between transition duration-200 ${
+                  isCompleted
+                    ? "border-emerald-500/30 bg-emerald-500/5 opacity-70"
+                    : isSkipped
+                    ? "border-border bg-muted/40 opacity-50"
+                    : "border-border bg-background/60 hover:border-primary/40 shadow-sm"
+                }`}
+              >
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`rounded-md border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${badgeColor}`}>
+                      {item.type.replace("_", " ")}
+                    </span>
+                    <span className="flex items-center gap-1 text-[11px] text-muted-foreground font-mono">
+                      <Clock className="h-3 w-3" />
+                      {item.estMinutes}m
+                    </span>
+                  </div>
+
+                  <h3 className="font-bold text-base text-foreground flex items-center gap-1.5">
+                    {isCompleted && <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />}
+                    <span>{item.conceptName}</span>
+                  </h3>
+
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    {item.reason}
+                  </p>
+                </div>
+
+                <div className="pt-4 border-t border-border/50 flex items-center justify-between gap-2 mt-4">
+                  {!isCompleted && !isSkipped ? (
+                    <>
+                      <Link
+                        href={
+                          item.type === "review" || item.type === "practice"
+                            ? `/quiz?mode=topic&slug=${item.conceptSlug}`
+                            : `/chat?topic=${item.conceptSlug}`
+                        }
+                        className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition shadow-sm"
+                      >
+                        Start Task →
+                      </Link>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleCompletePlanItem(item.id)}
+                          className="rounded-lg border border-border px-2 py-1.5 text-[11px] font-medium text-foreground hover:bg-accent transition"
+                          title="Mark complete"
+                        >
+                          Done
+                        </button>
+                        <button
+                          onClick={() => handleSkipPlanItem(item.id)}
+                          className="rounded-lg border border-border px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground transition"
+                          title="Skip task"
+                        >
+                          Skip
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <span className="text-xs font-semibold capitalize text-muted-foreground">
+                      {item.status}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── SECTION 2: DEMO TIME-TRAVEL SIMULATION SLIDER ────────────────── */}
+      <div className="rounded-3xl border border-indigo-500/30 bg-gradient-to-r from-blue-500/5 via-indigo-500/5 to-purple-500/5 p-6 sm:p-7 backdrop-blur-md space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <Sliders className="h-4 w-4 text-indigo-500" />
+              <span className="text-xs font-semibold uppercase tracking-wider text-indigo-500">
+                Interactive Demonstration
+              </span>
+            </div>
+            <h3 className="font-bold text-base text-foreground">
+              7-Day Learner Model Time-Travel Simulator
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Scrub the timeline to witness how Elo mastery, retention half-life, and daily tasks evolve day-by-day.
             </p>
           </div>
 
-          <div className="flex items-center gap-2.5 shrink-0">
-            <Link
-              href={`/chat?topic=${data.studyNext.slug}`}
-              className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-4 py-2 text-xs font-semibold text-foreground hover:bg-accent transition"
-            >
-              <Brain className="h-3.5 w-3.5 text-primary" />
-              <span>Discuss with Socratic Tutor</span>
-            </Link>
-            <Link
-              href={`/quiz?slug=${data.studyNext.slug}`}
-              className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-md shadow-primary/20 hover:bg-primary/90 transition"
-            >
-              <Zap className="h-3.5 w-3.5" />
-              <span>Take Topic Quiz</span>
-              <ArrowRight className="h-3.5 w-3.5" />
-            </Link>
+          <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-4 py-2 text-center">
+            <span className="text-[10px] uppercase font-bold text-indigo-500 block">Current Day</span>
+            <span className="font-black text-lg text-foreground">Day {demoDay} of 7</span>
           </div>
         </div>
-      )}
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+        <div className="space-y-2 pt-2">
+          <input
+            type="range"
+            min="1"
+            max="7"
+            step="1"
+            value={demoDay}
+            onChange={(e) => setDemoDay(Number(e.target.value))}
+            className="w-full accent-indigo-600 cursor-pointer h-2 bg-muted rounded-lg"
+          />
+          <div className="flex justify-between text-[11px] text-muted-foreground font-mono">
+            <span>Day 1 (Diagnostic)</span>
+            <span>Day 3 (Sliding Window Trap)</span>
+            <span>Day 5 (Binary Search)</span>
+            <span>Day 7 (Today&apos;s Review)</span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── SECTION 3: KPI OVERVIEW ───────────────────────────────────────── */}
+      <div id="progress" className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
         <div className="rounded-2xl border border-border bg-card/60 p-5 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-muted-foreground">Accuracy</span>
             <Award className="h-4 w-4 text-emerald-500" />
           </div>
-          <p className="text-2xl sm:text-3xl font-extrabold text-foreground">
+          <div className="text-2xl font-black text-foreground">
             {summary.assessmentAccuracy}%
-          </p>
-          <p className="text-[11px] text-muted-foreground">
-            Across {summary.totalAttempts} total attempts
-          </p>
+          </div>
+          <p className="text-[11px] text-muted-foreground">Overall quiz correctness</p>
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card/60 p-5 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">Concepts Tracked</span>
+            <Brain className="h-4 w-4 text-primary" />
+          </div>
+          <div className="text-2xl font-black text-foreground">
+            {summary.trackedTopics}
+          </div>
+          <p className="text-[11px] text-muted-foreground">Across curriculum nodes</p>
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card/60 p-5 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">Questions Answered</span>
+            <Zap className="h-4 w-4 text-amber-500" />
+          </div>
+          <div className="text-2xl font-black text-foreground">
+            {summary.totalAttempts}
+          </div>
+          <p className="text-[11px] text-muted-foreground">Graded interactions</p>
         </div>
 
         <div className="rounded-2xl border border-border bg-card/60 p-5 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-muted-foreground">Review Queue</span>
-            <Clock className="h-4 w-4 text-amber-500" />
+            <Clock className="h-4 w-4 text-rose-500" />
           </div>
-          <p className="text-2xl sm:text-3xl font-extrabold text-foreground">
+          <div className="text-2xl font-black text-foreground">
             {summary.reviewQueueCount}
-          </p>
-          <p className="text-[11px] text-muted-foreground">
-            Topics with retention &lt; 80%
-          </p>
-        </div>
-
-        <div className="rounded-2xl border border-border bg-card/60 p-5 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">Tracked Topics</span>
-            <BookOpen className="h-4 w-4 text-blue-500" />
           </div>
-          <p className="text-2xl sm:text-3xl font-extrabold text-foreground">
-            {summary.trackedTopics}
-          </p>
-          <p className="text-[11px] text-muted-foreground">
-            Active curated concepts
-          </p>
-        </div>
-
-        <div className="rounded-2xl border border-border bg-card/60 p-5 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">Misconceptions</span>
-            <AlertTriangle className="h-4 w-4 text-rose-500" />
-          </div>
-          <p className="text-2xl sm:text-3xl font-extrabold text-foreground">
-            {Object.keys(data?.misconceptionCounts || {}).length}
-          </p>
-          <p className="text-[11px] text-muted-foreground">
-            Patterns flagged for remediation
-          </p>
+          <p className="text-[11px] text-muted-foreground">Due on forgetting curve</p>
         </div>
       </div>
 
-      {/* Review Queue & Spaced Repetition Priority */}
-      {data?.reviewQueue && data.reviewQueue.length > 0 && (
-        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Clock className="h-4 w-4 text-amber-500" />
-              <h3 className="font-bold text-sm text-foreground">
-                Spaced Repetition Review Queue ({data.reviewQueue.length})
-              </h3>
-            </div>
-            <span className="text-[11px] text-muted-foreground">
-              Sorted by lowest retention first
-            </span>
+      {/* ── SECTION 4: HOW LEARN-AI ADAPTS TO YOU ─────────────────────────── */}
+      {insights && (
+        <div className="rounded-2xl border border-border bg-card/60 p-6 space-y-3">
+          <div className="flex items-center gap-2">
+            <Brain className="h-4 w-4 text-primary" />
+            <h3 className="font-bold text-sm text-foreground">
+              Learner Profile Transparency
+            </h3>
           </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {data.reviewQueue.map((item) => (
-              <div
-                key={item.topicId}
-                className="rounded-xl border border-border bg-background/80 p-3.5 space-y-2"
-              >
-                <div className="flex justify-between items-center">
-                  <span className="font-semibold text-xs text-foreground truncate max-w-[170px]">
-                    {item.topicName}
-                  </span>
-                  <span className="text-xs font-mono font-bold text-amber-500">
-                    {Math.round(item.retentionProbability * 100)}% Ret.
-                  </span>
-                </div>
-                {/* Progress bar */}
-                <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-                  <div
-                    className="h-full bg-amber-500 transition-all duration-500"
-                    style={{ width: `${Math.round(item.retentionProbability * 100)}%` }}
-                  />
-                </div>
-                <div className="flex justify-end pt-1">
-                  <Link
-                    href={`/quiz?slug=${item.topicSlug}`}
-                    className="text-[11px] font-semibold text-primary hover:underline inline-flex items-center gap-1"
-                  >
-                    <span>Quick Recall Quiz</span>
-                    <ArrowRight className="h-3 w-3" />
-                  </Link>
-                </div>
-              </div>
-            ))}
+          <p className="text-xs text-foreground/90 leading-relaxed">
+            {insights.adaptationSummary}
+          </p>
+          <div className="flex flex-wrap gap-2 pt-1 text-[11px]">
+            <span className="rounded-full border border-border bg-accent/40 px-3 py-1 text-muted-foreground">
+              Style: <strong>{insights.traits.styleDescription}</strong>
+            </span>
+            <span className="rounded-full border border-border bg-accent/40 px-3 py-1 text-muted-foreground">
+              Pace: <strong>{insights.traits.paceDescription}</strong>
+            </span>
+            <span className="rounded-full border border-border bg-accent/40 px-3 py-1 text-muted-foreground">
+              Depth: <strong>{insights.traits.depthDescription}</strong>
+            </span>
           </div>
         </div>
       )}
 
-      {/* Charts Section */}
+      {/* ── SECTION 5: CHARTS & CURVES ────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Topic Mastery vs Effective Mastery */}
         <div className="rounded-2xl border border-border bg-card/60 p-6 space-y-4">
-          <div className="flex justify-between items-center">
-            <div>
-              <h3 className="font-bold text-sm text-foreground">
-                Mastery vs. Effective Retention
-              </h3>
-              <p className="text-[11px] text-muted-foreground">
-                Blue = Elo Mastery, Purple = Effective Mastery (Mastery × Retention)
-              </p>
-            </div>
-          </div>
-
+          <h3 className="font-bold text-sm text-foreground">
+            Top Concepts: Mastery vs. Retention Probability
+          </h3>
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 20 }}>
                 <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
-                <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-25} textAnchor="end" />
+                <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} angle={-25} textAnchor="end" />
                 <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} />
                 <Tooltip
                   contentStyle={{
@@ -426,33 +581,23 @@ export default function DashboardPage() {
                     fontSize: "12px",
                   }}
                 />
-                <Bar dataKey="mastery" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Mastery %" />
-                <Bar dataKey="effective" fill="#8b5cf6" radius={[4, 4, 0, 0]} name="Effective %" />
+                <Bar dataKey="mastery" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Elo Mastery %" />
+                <Bar dataKey="retention" fill="#f59e0b" radius={[4, 4, 0, 0]} name="Retention Prob %" />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        {/* Score Trend Accuracy Series */}
         <div className="rounded-2xl border border-border bg-card/60 p-6 space-y-4">
-          <div>
-            <h3 className="font-bold text-sm text-foreground">
-              Performance Trend (Windows of 10)
-            </h3>
-            <p className="text-[11px] text-muted-foreground">
-              Rolling window accuracy over successive evaluation attempts
-            </p>
-          </div>
-
+          <h3 className="font-bold text-sm text-foreground">
+            Rolling Assessment Accuracy Trend
+          </h3>
           <div className="h-64 w-full">
             {data?.scoreTrendSeries && data.scoreTrendSeries.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={data.scoreTrendSeries}
-                  margin={{ top: 10, right: 20, left: -20, bottom: 10 }}
-                >
+                <LineChart data={data.scoreTrendSeries} margin={{ top: 10, right: 20, left: -20, bottom: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
-                  <XAxis dataKey="window" tick={{ fontSize: 10 }} label={{ value: "Window", position: "insideBottom", offset: -5, fontSize: 10 }} />
+                  <XAxis dataKey="window" tick={{ fontSize: 10 }} />
                   <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} />
                   <Tooltip
                     contentStyle={{
@@ -474,40 +619,14 @@ export default function DashboardPage() {
               </ResponsiveContainer>
             ) : (
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                Take at least 10 quiz questions to generate rolling trend lines.
+                Take at least 5 questions to generate rolling trend lines.
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Misconceptions Breakdown */}
-      {data?.misconceptionCounts && Object.keys(data.misconceptionCounts).length > 0 && (
-        <div className="rounded-2xl border border-border bg-card/60 p-6 space-y-3">
-          <h3 className="font-bold text-sm text-foreground flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-rose-500" />
-            <span>Active Misconception Signals</span>
-          </h3>
-          <p className="text-xs text-muted-foreground">
-            Patterns extracted from incorrect options chosen during quizzes and confusion detected in Socratic chat:
-          </p>
-          <div className="flex flex-wrap gap-2 pt-1">
-            {Object.entries(data.misconceptionCounts).map(([tag, count]) => (
-              <span
-                key={tag}
-                className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/20 bg-rose-500/10 px-3 py-1 text-xs font-medium text-rose-600 dark:text-rose-400"
-              >
-                <span>{tag}</span>
-                <span className="rounded-full bg-rose-500/20 px-1.5 py-0.2 text-[10px] font-bold">
-                  {count}x
-                </span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Curated Topic Metrics Table / Grid */}
+      {/* ── SECTION 6: CURRICULUM TOPIC MASTERY GRID ──────────────────────── */}
       <div className="rounded-2xl border border-border bg-card/60 p-6 space-y-4">
         <h3 className="font-bold text-sm text-foreground">
           Curriculum Topic Mastery & Retention Status
@@ -561,16 +680,10 @@ export default function DashboardPage() {
                 </div>
 
                 <div className="flex items-center justify-between pt-2 border-t border-border/50 text-[11px]">
-                  <Link
-                    href={`/chat?topic=${t.topicSlug}`}
-                    className="text-primary hover:underline"
-                  >
+                  <Link href={`/chat?topic=${t.topicSlug}`} className="text-primary hover:underline">
                     Discuss
                   </Link>
-                  <Link
-                    href={`/quiz?slug=${t.topicSlug}`}
-                    className="text-muted-foreground hover:text-foreground font-medium"
-                  >
+                  <Link href={`/quiz?slug=${t.topicSlug}`} className="text-muted-foreground hover:text-foreground font-medium">
                     Quiz &rarr;
                   </Link>
                 </div>

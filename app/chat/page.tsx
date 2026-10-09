@@ -20,6 +20,15 @@ import {
   BookOpen,
   AlertCircle,
   HelpCircle,
+  Copy,
+  Check,
+  Volume2,
+  VolumeX,
+  Mic,
+  MicOff,
+  ThumbsUp,
+  ThumbsDown,
+  Square,
 } from "lucide-react";
 import { CURATED_TOPICS } from "@/lib/learner/topics";
 
@@ -76,6 +85,67 @@ function parseAssistantMessage(text: string): ParsedMessage {
   };
 }
 
+/**
+ * Renders text with formatted code blocks and copy buttons
+ */
+function FormattedMessageContent({ content }: { content: string }) {
+  const parts = content.split(/(```[\s\S]*?```)/g);
+
+  return (
+    <div className="space-y-3 leading-relaxed">
+      {parts.map((part, index) => {
+        if (part.startsWith("```") && part.endsWith("```")) {
+          const lines = part.slice(3, -3).trim().split("\n");
+          const firstLine = lines[0]?.trim() || "";
+          const hasLang = !firstLine.includes(" ") && firstLine.length > 0;
+          const language = hasLang ? firstLine : "code";
+          const codeBody = hasLang ? lines.slice(1).join("\n") : lines.join("\n");
+
+          return <CodeSnippetBlock key={index} code={codeBody} language={language} />;
+        }
+
+        return (
+          <div key={index} className="whitespace-pre-wrap font-sans">
+            {part}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CodeSnippetBlock({ code, language }: { code: string; language: string }) {
+  const [copied, setCopied] = React.useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="rounded-xl border border-border/80 bg-slate-950 text-slate-100 overflow-hidden my-2 shadow-md">
+      <div className="flex items-center justify-between px-3.5 py-1.5 bg-slate-900 border-b border-slate-800 text-[11px] text-slate-400 font-mono">
+        <span className="capitalize">{language}</span>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1 hover:text-white transition px-1.5 py-0.5 rounded hover:bg-slate-800"
+          title="Copy code"
+        >
+          {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+          <span>{copied ? "Copied!" : "Copy"}</span>
+        </button>
+      </div>
+      <pre className="p-3.5 overflow-x-auto text-xs font-mono leading-relaxed">
+        <code>{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+/**
+ * Interactive Concept Check Card
+ */
 function ConceptCheckCard({
   question,
   conversationId,
@@ -175,16 +245,102 @@ function ConceptCheckCard({
   );
 }
 
+/**
+ * Feedback Bar for Assistant Explanations
+ */
+function FeedbackBar({
+  conversationId,
+  conceptSlug,
+}: {
+  conversationId?: string;
+  conceptSlug?: string;
+}) {
+  const [given, setGiven] = React.useState<string | null>(null);
+
+  const sendFeedback = async (type: string) => {
+    setGiven(type);
+    try {
+      await fetch("/api/chat/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId, conceptSlug, type }),
+      });
+    } catch {
+      // Ignored
+    }
+  };
+
+  if (given) {
+    return (
+      <div className="text-[11px] text-muted-foreground italic pt-1">
+        ✓ Feedback recorded ({given.replace("_", " ")})
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 pt-1 text-[11px] text-muted-foreground">
+      <span className="text-[10px] uppercase font-semibold text-muted-foreground/80 mr-1">
+        Feedback:
+      </span>
+      <button
+        onClick={() => sendFeedback("thumbs_up")}
+        className="p-1 hover:text-emerald-500 rounded hover:bg-accent transition"
+        title="Helpful explanation"
+      >
+        <ThumbsUp className="h-3 w-3" />
+      </button>
+      <button
+        onClick={() => sendFeedback("thumbs_down")}
+        className="p-1 hover:text-rose-500 rounded hover:bg-accent transition"
+        title="Unhelpful"
+      >
+        <ThumbsDown className="h-3 w-3" />
+      </button>
+      <span className="text-border">|</span>
+      <button
+        onClick={() => sendFeedback("too_easy")}
+        className="px-1.5 py-0.5 rounded border border-border hover:bg-accent transition text-[10px]"
+      >
+        Too easy
+      </button>
+      <button
+        onClick={() => sendFeedback("too_hard")}
+        className="px-1.5 py-0.5 rounded border border-border hover:bg-accent transition text-[10px]"
+      >
+        Too hard
+      </button>
+      <button
+        onClick={() => sendFeedback("unclear")}
+        className="px-1.5 py-0.5 rounded border border-border hover:bg-accent transition text-[10px]"
+      >
+        Unclear
+      </button>
+    </div>
+  );
+}
+
 function ChatContent() {
   const searchParams = useSearchParams();
   const initialTopicSlug = searchParams.get("topic") || "";
+  const initialPrompt = searchParams.get("prompt") || "";
 
   const [activeTopic, setActiveTopic] = React.useState<string>(initialTopicSlug);
   const [activeConversationId, setActiveConversationId] = React.useState<string | undefined>(undefined);
   const [conversations, setConversations] = React.useState<ConversationItem[]>([]);
   const [sidebarOpen, setSidebarOpen] = React.useState(true);
   const [activeStyle, setActiveStyle] = React.useState<string>("analogy");
-  const [input, setInput] = React.useState("");
+  const [input, setInput] = React.useState(initialPrompt);
+
+  React.useEffect(() => {
+    if (initialPrompt) {
+      setInput(initialPrompt);
+    }
+  }, [initialPrompt]);
+
+  // Speech Recognition & Text to Speech state
+  const [isListening, setIsListening] = React.useState(false);
+  const [speakingId, setSpeakingId] = React.useState<string | null>(null);
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
 
@@ -234,11 +390,71 @@ function ChatContent() {
     status,
     setMessages,
     error,
+    stop,
   } = useChat({
     transport,
   });
 
   const isLoading = status === "submitted" || status === "streaming";
+
+  // Voice Input (Web Speech Recognition API)
+  const toggleVoiceInput = () => {
+    if (typeof window === "undefined") return;
+    const SpeechRecognition =
+      (window as unknown as { SpeechRecognition?: any }).SpeechRecognition ||
+      (window as unknown as { webkitSpeechRecognition?: any }).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      alert("Speech recognition is not supported in this browser.");
+      return;
+    }
+
+    if (isListening) {
+      setIsListening(false);
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = "en-US";
+
+      recognition.onstart = () => setIsListening(true);
+      recognition.onend = () => setIsListening(false);
+      recognition.onerror = () => setIsListening(false);
+
+      recognition.onresult = (event: any) => {
+        const transcript = event.results[0]?.[0]?.transcript;
+        if (transcript) {
+          setInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
+        }
+      };
+
+      recognition.start();
+    } catch {
+      setIsListening(false);
+    }
+  };
+
+  // Text to Speech (Web Speech Synthesis API)
+  const toggleSpeak = (id: string, text: string) => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+
+    if (speakingId === id) {
+      window.speechSynthesis.cancel();
+      setSpeakingId(null);
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text.slice(0, 300));
+    utterance.rate = 1.0;
+    utterance.onend = () => setSpeakingId(null);
+    utterance.onerror = () => setSpeakingId(null);
+    setSpeakingId(id);
+    window.speechSynthesis.speak(utterance);
+  };
 
   const handleSelectConversation = async (id: string) => {
     setActiveConversationId(id);
@@ -475,8 +691,29 @@ function ChatContent() {
                     <Brain className="h-4 w-4" />
                   </div>
 
-                  <div className="rounded-2xl border border-border/70 bg-card/80 text-foreground p-4 text-sm leading-relaxed shadow-sm backdrop-blur-md font-sans w-full space-y-3">
-                    <div className="whitespace-pre-wrap">{mainText}</div>
+                  <div className="rounded-2xl border border-border/70 bg-card/80 text-foreground p-4 text-sm leading-relaxed shadow-sm backdrop-blur-md w-full space-y-3">
+                    <div className="flex items-center justify-between border-b border-border/40 pb-1.5 text-xs text-muted-foreground">
+                      <span className="font-semibold text-[11px] text-primary">Tutor Response</span>
+                      <button
+                        onClick={() => toggleSpeak(m.id, mainText)}
+                        className="flex items-center gap-1 hover:text-foreground transition text-[11px]"
+                        title={speakingId === m.id ? "Stop voice" : "Read aloud"}
+                      >
+                        {speakingId === m.id ? (
+                          <>
+                            <VolumeX className="h-3.5 w-3.5 text-amber-500 animate-pulse" />
+                            <span>Stop</span>
+                          </>
+                        ) : (
+                          <>
+                            <Volume2 className="h-3.5 w-3.5" />
+                            <span>Read aloud</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    <FormattedMessageContent content={mainText} />
 
                     {/* Styled Concept Check Card */}
                     {checkQuestion && (
@@ -508,20 +745,26 @@ function ChatContent() {
                       </div>
                     )}
 
-                    {/* Inline Quiz Prompt */}
-                    {activeConversationId && (
-                      <div className="pt-2 border-t border-border/50 flex items-center justify-between text-xs">
+                    {/* Feedback Bar */}
+                    <div className="pt-2 border-t border-border/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <FeedbackBar
+                        conversationId={activeConversationId}
+                        conceptSlug={activeTopic || undefined}
+                      />
+
+                      {/* Inline Quiz Prompt */}
+                      {activeConversationId && (
                         <Link
                           href={`/quiz?mode=chat&conversationId=${activeConversationId}${
                             activeTopic ? `&slug=${activeTopic}` : ""
                           }`}
-                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline shrink-0"
                         >
                           <Sparkles className="h-3 w-3" />
-                          <span>Test your understanding with a 3-question quiz on this →</span>
+                          <span>Take 3-question quiz on this →</span>
                         </Link>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -533,9 +776,16 @@ function ChatContent() {
               <div className="h-8 w-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shrink-0 mt-0.5 animate-pulse">
                 <Brain className="h-4 w-4" />
               </div>
-              <div className="rounded-2xl border border-border bg-card/60 px-4 py-3 text-xs text-muted-foreground flex items-center gap-2">
+              <div className="rounded-2xl border border-border bg-card/60 px-4 py-3 text-xs text-muted-foreground flex items-center gap-3">
                 <Sparkles className="h-3.5 w-3.5 text-primary animate-spin" />
                 <span>Formulating explanation and concept check...</span>
+                <button
+                  onClick={() => stop()}
+                  className="flex items-center gap-1 rounded bg-destructive/10 text-destructive border border-destructive/20 px-2 py-0.5 text-[10px] font-semibold hover:bg-destructive/20 transition ml-2"
+                >
+                  <Square className="h-2.5 w-2.5 fill-current" />
+                  <span>Stop</span>
+                </button>
               </div>
             </div>
           )}
@@ -554,15 +804,29 @@ function ChatContent() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Chat Input Bar */}
+        {/* Chat Input Bar with Voice Input */}
         <div className="p-4 border-t border-border bg-card/40 backdrop-blur-md">
-          <form onSubmit={handleFormSubmit} className="mx-auto max-w-3xl flex gap-2">
+          <form onSubmit={handleFormSubmit} className="mx-auto max-w-3xl flex gap-2 items-center">
+            <button
+              type="button"
+              onClick={toggleVoiceInput}
+              aria-label={isListening ? "Stop voice input" : "Start voice input"}
+              className={`rounded-xl p-3 border transition ${
+                isListening
+                  ? "border-rose-500 bg-rose-500/20 text-rose-500 animate-pulse"
+                  : "border-border bg-card/80 text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+            </button>
+
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Explain your approach, ask a question, or describe a bug..."
+              placeholder={isListening ? "Listening... Speak your question" : "Explain your approach, ask a question, or describe a bug..."}
               className="flex-1 rounded-xl border border-border bg-background px-4 py-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary shadow-inner"
             />
+
             <button
               type="submit"
               disabled={isLoading || !input.trim()}
