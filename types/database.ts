@@ -230,6 +230,8 @@ export interface Database {
           id: string;
           user_id: string;
           topic_id: string | null;
+          conversation_id?: string | null;
+          concept_slug?: string | null;
           difficulty_level: number;
           status: "in_progress" | "completed" | "abandoned";
           score: number;
@@ -241,6 +243,8 @@ export interface Database {
           id?: string;
           user_id: string;
           topic_id?: string | null;
+          conversation_id?: string | null;
+          concept_slug?: string | null;
           difficulty_level?: number;
           status?: "in_progress" | "completed" | "abandoned";
           score?: number;
@@ -252,6 +256,8 @@ export interface Database {
           id?: string;
           user_id?: string;
           topic_id?: string | null;
+          conversation_id?: string | null;
+          concept_slug?: string | null;
           difficulty_level?: number;
           status?: "in_progress" | "completed" | "abandoned";
           score?: number;
@@ -396,6 +402,57 @@ export interface Database {
             referencedColumns: ["id"];
           }
         ];
+      };
+      learning_events: {
+        Row: {
+          id: string;
+          user_id: string;
+          event_type:
+            | "quiz_generated"
+            | "quiz_completed"
+            | "question_answered"
+            | "concept_extracted"
+            | "hint_delivered"
+            | "style_updated";
+          topic_id: string | null;
+          conversation_id: string | null;
+          concept_slug: string | null;
+          metadata: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          event_type:
+            | "quiz_generated"
+            | "quiz_completed"
+            | "question_answered"
+            | "concept_extracted"
+            | "hint_delivered"
+            | "style_updated";
+          topic_id?: string | null;
+          conversation_id?: string | null;
+          concept_slug?: string | null;
+          metadata?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          event_type?:
+            | "quiz_generated"
+            | "quiz_completed"
+            | "question_answered"
+            | "concept_extracted"
+            | "hint_delivered"
+            | "style_updated";
+          topic_id?: string | null;
+          conversation_id?: string | null;
+          concept_slug?: string | null;
+          metadata?: Json;
+          created_at?: string;
+        };
+        Relationships: [];
       };
     };
     Views: {

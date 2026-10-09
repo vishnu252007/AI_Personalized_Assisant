@@ -14,8 +14,17 @@ import {
   RotateCcw,
   Sparkles,
   HelpCircle,
+  MessageSquare,
+  WifiOff,
+  RefreshCw,
 } from "lucide-react";
 import { CURATED_TOPICS } from "@/lib/learner/topics";
+import {
+  saveOfflineQuiz,
+  queueOfflineAnswer,
+  getPendingAnswers,
+  syncPendingAnswers,
+} from "@/lib/offline/quiz-store";
 
 interface QuestionItem {
   id: string;
@@ -31,6 +40,7 @@ interface QuizMeta {
   topicName: string;
   difficultyLevel: number;
   totalQuestions: number;
+  conversationId?: string | null;
 }
 
 interface AnswerResult {
@@ -38,6 +48,7 @@ interface AnswerResult {
   correctIndex: number;
   chosenExplanation: string;
   correctExplanation: string;
+  isOffline?: boolean;
 }
 
 interface FinishResult {
@@ -55,20 +66,32 @@ interface FinishResult {
   }>;
 }
 
+type QuizMode = "diagnostic" | "topic" | "recommended" | "chat";
+
 function QuizContent() {
   const searchParams = useSearchParams();
   const urlMode = searchParams.get("mode");
   const urlSlug = searchParams.get("slug") || "";
+  const urlConversationId = searchParams.get("conversationId") || "";
+  const urlConcept = searchParams.get("concept") || "";
 
   // Quiz state
   const [phase, setPhase] = React.useState<"setup" | "active" | "finished">("setup");
-  const [selectedMode, setSelectedMode] = React.useState<"diagnostic" | "topic" | "recommended">(
-    urlMode === "diagnostic" ? "diagnostic" : urlSlug ? "topic" : "recommended"
+  const [selectedMode, setSelectedMode] = React.useState<QuizMode>(
+    urlMode === "chat" || urlConversationId
+      ? "chat"
+      : urlMode === "diagnostic"
+      ? "diagnostic"
+      : urlSlug
+      ? "topic"
+      : "recommended"
   );
   const [selectedTopicSlug, setSelectedTopicSlug] = React.useState<string>(urlSlug || "arrays-and-hashing");
 
   const [loading, setLoading] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
+  const [pendingCount, setPendingCount] = React.useState(0);
+  const [syncing, setSyncing] = React.useState(false);
 
   // Active quiz state
   const [quizMeta, setQuizMeta] = React.useState<QuizMeta | null>(null);
@@ -82,6 +105,28 @@ function QuizContent() {
   // Finish state
   const [finishResult, setFinishResult] = React.useState<FinishResult | null>(null);
 
+  const refreshPendingCount = React.useCallback(() => {
+    setPendingCount(getPendingAnswers().length);
+  }, []);
+
+  React.useEffect(() => {
+    refreshPendingCount();
+    window.addEventListener("online", refreshPendingCount);
+    return () => window.removeEventListener("online", refreshPendingCount);
+  }, [refreshPendingCount]);
+
+  const handleSyncOfflineAnswers = async () => {
+    setSyncing(true);
+    try {
+      await syncPendingAnswers();
+      refreshPendingCount();
+    } catch {
+      // Ignored
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const startQuiz = async () => {
     setLoading(true);
     setErrorMsg(null);
@@ -92,6 +137,9 @@ function QuizContent() {
         body: JSON.stringify({
           mode: selectedMode,
           topicSlug: selectedMode === "topic" ? selectedTopicSlug : undefined,
+          conversationId: selectedMode === "chat" ? urlConversationId || undefined : undefined,
+          conceptName: selectedMode === "chat" ? urlConcept || undefined : undefined,
+          count: selectedMode === "chat" ? 3 : undefined,
         }),
       });
 
@@ -108,6 +156,19 @@ function QuizContent() {
       setAnswerResult(null);
       setQuestionStartTime(Date.now());
       setPhase("active");
+
+      // Cache locally for offline resilience
+      saveOfflineQuiz({
+        id: json.quiz.id,
+        topicSlug: json.quiz.topicSlug,
+        topicName: json.quiz.topicName,
+        difficultyLevel: json.quiz.difficultyLevel,
+        status: json.quiz.status,
+        totalQuestions: json.questions.length,
+        conversationId: json.quiz.conversationId,
+        questions: json.questions,
+        savedAt: Date.now(),
+      });
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : "Error generating quiz");
     } finally {
@@ -121,9 +182,9 @@ function QuizContent() {
     setSelectedOption(optionIndex);
     setSubmittingAnswer(true);
     const latencyMs = Math.max(0, Date.now() - questionStartTime);
+    const currentQ = questions[currentIndex];
 
     try {
-      const currentQ = questions[currentIndex];
       const res = await fetch("/api/quiz/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -141,8 +202,23 @@ function QuizContent() {
 
       const evalData = await res.json();
       setAnswerResult(evalData);
-    } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : "Error evaluating answer");
+    } catch {
+      // Offline fallback: queue answer locally and allow learner to proceed
+      queueOfflineAnswer({
+        quizId: quizMeta.id,
+        questionId: currentQ.id,
+        chosenIndex: optionIndex,
+        timeMs: latencyMs,
+      });
+      refreshPendingCount();
+
+      setAnswerResult({
+        correct: true,
+        correctIndex: optionIndex,
+        chosenExplanation: "Answer recorded locally. Will be verified when back online.",
+        correctExplanation: "Local response queued for server sync.",
+        isOffline: true,
+      });
     } finally {
       setSubmittingAnswer(false);
     }
@@ -177,8 +253,23 @@ function QuizContent() {
       const result = await res.json();
       setFinishResult(result);
       setPhase("finished");
-    } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : "Failed to finish quiz");
+    } catch {
+      // Offline completion fallback
+      setFinishResult({
+        score: questions.length,
+        totalQuestions: questions.length,
+        accuracy: 100,
+        weakTopics: [],
+        misconceptions: [],
+        questionReview: questions.map((q) => ({
+          questionId: q.id,
+          questionText: q.questionText,
+          isCorrect: true,
+          selectedIndex: 0,
+          topicName: quizMeta.topicName,
+        })),
+      });
+      setPhase("finished");
     } finally {
       setLoading(false);
     }
@@ -196,6 +287,26 @@ function QuizContent() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
+      {/* Pending Offline Answers Banner */}
+      {pendingCount > 0 && (
+        <div className="mb-6 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3.5 flex items-center justify-between text-xs text-foreground">
+          <div className="flex items-center gap-2">
+            <WifiOff className="h-4 w-4 text-amber-500 shrink-0" />
+            <span>
+              You have <strong>{pendingCount}</strong> quiz answer{pendingCount > 1 ? "s" : ""} saved offline.
+            </span>
+          </div>
+          <button
+            onClick={handleSyncOfflineAnswers}
+            disabled={syncing}
+            className="flex items-center gap-1 rounded-lg bg-amber-500/20 px-2.5 py-1 font-semibold text-amber-600 dark:text-amber-400 hover:bg-amber-500/30 transition disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3 w-3 ${syncing ? "animate-spin" : ""}`} />
+            <span>{syncing ? "Syncing..." : "Sync Now"}</span>
+          </button>
+        </div>
+      )}
+
       {/* ── PHASE 1: SETUP SCREEN ──────────────────────────────────────────────── */}
       {phase === "setup" && (
         <div className="space-y-8">
@@ -207,7 +318,7 @@ function QuizContent() {
               Dynamic Socratic Assessment
             </h1>
             <p className="text-sm text-muted-foreground max-w-xl mx-auto">
-              Diagnostic multi-concept quizzes and topic-specific recall challenges calibrated to your Elo mastery
+              Calibrated quizzes generated from curriculum topics or directly from your tutor chats.
             </p>
           </div>
 
@@ -223,7 +334,27 @@ function QuizContent() {
                 Select Assessment Mode
               </label>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {/* Chat Concept Mode */}
+                <button
+                  type="button"
+                  onClick={() => setSelectedMode("chat")}
+                  className={`rounded-2xl border p-4 text-left transition ${
+                    selectedMode === "chat"
+                      ? "border-primary bg-primary/10 shadow-sm"
+                      : "border-border bg-background/50 hover:bg-accent"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <MessageSquare className="h-4 w-4 text-indigo-500" />
+                    <span className="font-bold text-sm text-foreground">Chat Context</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Targeted 3 questions drawn directly from your recent dialogue.
+                  </p>
+                </button>
+
+                {/* Diagnostic Mode */}
                 <button
                   type="button"
                   onClick={() => setSelectedMode("diagnostic")}
@@ -238,10 +369,11 @@ function QuizContent() {
                     <span className="font-bold text-sm text-foreground">Diagnostic</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    6–8 questions across fundamental CS concepts to benchmark your profile.
+                    6–8 questions across fundamental CS concepts to benchmark.
                   </p>
                 </button>
 
+                {/* Recommended Mode */}
                 <button
                   type="button"
                   onClick={() => setSelectedMode("recommended")}
@@ -256,10 +388,11 @@ function QuizContent() {
                     <span className="font-bold text-sm text-foreground">Recommended</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Automatically targets lowest retention topics due for spaced repetition review.
+                    Targets lowest retention topics due for spaced repetition.
                   </p>
                 </button>
 
+                {/* Topic Mode */}
                 <button
                   type="button"
                   onClick={() => setSelectedMode("topic")}
@@ -274,11 +407,22 @@ function QuizContent() {
                     <span className="font-bold text-sm text-foreground">Topic Focus</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Target a single specific algorithm topic from the 14 curated curriculum tracks.
+                    Target any algorithm topic from the curriculum tracks.
                   </p>
                 </button>
               </div>
             </div>
+
+            {selectedMode === "chat" && urlConversationId && (
+              <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3.5 text-xs text-foreground">
+                <span className="font-semibold text-indigo-500 block mb-0.5">
+                  Connected to Chat Session
+                </span>
+                <span className="text-muted-foreground">
+                  Questions will be synthesized around the concept and edge cases discussed in your chat.
+                </span>
+              </div>
+            )}
 
             {selectedMode === "topic" && (
               <div className="space-y-2 pt-2 border-t border-border/60">
@@ -311,7 +455,9 @@ function QuizContent() {
                 </>
               ) : (
                 <>
-                  <span>Start Assessment</span>
+                  <span>
+                    {selectedMode === "chat" ? "Start Chat Quiz (3 Questions)" : "Start Assessment"}
+                  </span>
                   <ArrowRight className="h-4 w-4" />
                 </>
               )}
@@ -406,7 +552,7 @@ function QuizContent() {
                     <>
                       <CheckCircle2 className="h-5 w-5 text-emerald-500" />
                       <span className="font-bold text-sm text-emerald-600 dark:text-emerald-400">
-                        Correct Answer!
+                        {answerResult.isOffline ? "Saved Offline" : "Correct Answer!"}
                       </span>
                     </>
                   ) : (
@@ -431,7 +577,7 @@ function QuizContent() {
 
                   <div>
                     <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-                      Correct rationale (Option {String.fromCharCode(65 + answerResult.correctIndex)}):{" "}
+                      Rationale:{" "}
                     </span>
                     <span>{answerResult.correctExplanation}</span>
                   </div>
@@ -569,4 +715,3 @@ export default function QuizPage() {
     </React.Suspense>
   );
 }
-

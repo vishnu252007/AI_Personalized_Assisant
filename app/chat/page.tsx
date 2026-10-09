@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
@@ -18,6 +19,7 @@ import {
   ChevronRight,
   BookOpen,
   AlertCircle,
+  HelpCircle,
 } from "lucide-react";
 import { CURATED_TOPICS } from "@/lib/learner/topics";
 
@@ -36,6 +38,42 @@ function getMessageText(m: UIMessage): string {
       return "";
     })
     .join("");
+}
+
+interface ParsedMessage {
+  mainText: string;
+  checkQuestion: string | null;
+  suggestions: string[];
+}
+
+function parseAssistantMessage(text: string): ParsedMessage {
+  let cleaned = text;
+  let checkQuestion: string | null = null;
+  const suggestions: string[] = [];
+
+  // Extract <check>question</check>
+  const checkMatch = cleaned.match(/<check>([\s\S]*?)<\/check>/i);
+  if (checkMatch) {
+    checkQuestion = checkMatch[1].trim();
+    cleaned = cleaned.replace(/<check>[\s\S]*?<\/check>/gi, "").trim();
+  }
+
+  // Extract <next>opt 1|opt 2|opt 3</next>
+  const nextMatch = cleaned.match(/<next>([\s\S]*?)<\/next>/i);
+  if (nextMatch) {
+    const rawOptions = nextMatch[1].split("|");
+    for (const opt of rawOptions) {
+      const trimmed = opt.trim();
+      if (trimmed) suggestions.push(trimmed);
+    }
+    cleaned = cleaned.replace(/<next>[\s\S]*?<\/next>/gi, "").trim();
+  }
+
+  return {
+    mainText: cleaned,
+    checkQuestion,
+    suggestions,
+  };
 }
 
 function ChatContent() {
@@ -156,11 +194,16 @@ function ChatContent() {
     await sendMessage({ text: trimmed });
   };
 
+  const handleSuggestionClick = async (suggestion: string) => {
+    if (isLoading) return;
+    await sendMessage({ text: suggestion });
+  };
+
   const quickPrompts = [
-    "Could you give me an analogy for this?",
-    "Can we break this down into first principles?",
-    "Show me a concrete edge case with small numbers.",
-    "Test my understanding with a Socratic question.",
+    "Could you give me an analogy for how hash maps resolve collisions?",
+    "Explain binary search using first principles.",
+    "Walk me through a concrete edge case for two pointers with duplicates.",
+    "What is the difference between BFS and DFS with an example?",
   ];
 
   return (
@@ -223,7 +266,7 @@ function ChatContent() {
 
       {/* Main Chat Workspace */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        {/* Top Chat Bar: Toggle Sidebar, Active Style Badge, Topic Selector */}
+        {/* Top Chat Bar: Toggle Sidebar, Active Style Badge, Quiz me on this, Topic Selector */}
         <div className="flex items-center justify-between border-b border-border/60 bg-card/20 px-4 py-2.5 backdrop-blur-sm gap-2">
           <div className="flex items-center gap-2">
             <button
@@ -247,21 +290,36 @@ function ChatContent() {
             </div>
           </div>
 
-          {/* Topic Focus Dropdown */}
-          <div className="flex items-center gap-1.5">
-            <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
-            <select
-              value={activeTopic}
-              onChange={(e) => setActiveTopic(e.target.value)}
-              className="rounded-lg border border-border bg-card px-2.5 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              <option value="">All Topics (Auto-detect)</option>
-              {CURATED_TOPICS.map((t) => (
-                <option key={t.slug} value={t.slug}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
+          <div className="flex items-center gap-2">
+            {/* "Quiz me on this" Button */}
+            {activeConversationId && (
+              <Link
+                href={`/quiz?mode=chat&conversationId=${activeConversationId}${
+                  activeTopic ? `&slug=${activeTopic}` : ""
+                }`}
+                className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-3 py-1 text-xs font-semibold text-white shadow-sm hover:from-blue-700 hover:to-indigo-700 transition"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                <span>Quiz me on this</span>
+              </Link>
+            )}
+
+            {/* Topic Focus Dropdown */}
+            <div className="flex items-center gap-1.5">
+              <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
+              <select
+                value={activeTopic}
+                onChange={(e) => setActiveTopic(e.target.value)}
+                className="rounded-lg border border-border bg-card px-2.5 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+                <option value="">All Topics (Auto-detect)</option>
+                {CURATED_TOPICS.map((t) => (
+                  <option key={t.slug} value={t.slug}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
@@ -273,10 +331,10 @@ function ChatContent() {
                 <Brain className="h-6 w-6" />
               </div>
               <div className="space-y-1.5">
-                <h3 className="font-bold text-lg text-foreground">Socratic Dialogue Tutor</h3>
+                <h3 className="font-bold text-lg text-foreground">Adaptive Tutor</h3>
                 <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">
-                  I will not give you the answers directly. Instead, tell me what algorithm or data structure
-                  you are thinking through, and I will help you reason through it step by step.
+                  Ask any technical concept or question. I explain directly first with concrete examples,
+                  then check your understanding with focused questions.
                 </p>
               </div>
 
@@ -298,28 +356,75 @@ function ChatContent() {
           ) : (
             messages.map((m) => {
               const isAssistant = m.role === "assistant";
-              const textContent = getMessageText(m);
-              return (
-                <div
-                  key={m.id}
-                  className={`flex gap-3 max-w-3xl ${
-                    isAssistant ? "mr-auto" : "ml-auto justify-end"
-                  }`}
-                >
-                  {isAssistant && (
-                    <div className="h-8 w-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shrink-0 mt-0.5 shadow-sm">
-                      <Brain className="h-4 w-4" />
-                    </div>
-                  )}
+              const rawText = getMessageText(m);
 
-                  <div
-                    className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                      isAssistant
-                        ? "border border-border/70 bg-card/80 text-foreground shadow-sm backdrop-blur-md whitespace-pre-wrap font-sans"
-                        : "bg-primary text-primary-foreground shadow-md max-w-md whitespace-pre-wrap"
-                    }`}
-                  >
-                    {textContent}
+              if (!isAssistant) {
+                return (
+                  <div key={m.id} className="flex gap-3 max-w-3xl ml-auto justify-end">
+                    <div className="rounded-2xl px-4 py-3 text-sm leading-relaxed bg-primary text-primary-foreground shadow-md max-w-md whitespace-pre-wrap">
+                      {rawText}
+                    </div>
+                  </div>
+                );
+              }
+
+              const { mainText, checkQuestion, suggestions } = parseAssistantMessage(rawText);
+
+              return (
+                <div key={m.id} className="flex gap-3 max-w-3xl mr-auto">
+                  <div className="h-8 w-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shrink-0 mt-0.5 shadow-sm">
+                    <Brain className="h-4 w-4" />
+                  </div>
+
+                  <div className="rounded-2xl border border-border/70 bg-card/80 text-foreground p-4 text-sm leading-relaxed shadow-sm backdrop-blur-md font-sans w-full space-y-3">
+                    <div className="whitespace-pre-wrap">{mainText}</div>
+
+                    {/* Styled Concept Check Card */}
+                    {checkQuestion && (
+                      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+                        <div className="flex items-center gap-1.5 font-semibold text-amber-500 mb-1">
+                          <HelpCircle className="h-3.5 w-3.5" />
+                          <span>Concept Check</span>
+                        </div>
+                        <p className="text-foreground/90">{checkQuestion}</p>
+                      </div>
+                    )}
+
+                    {/* Clickable Next Chips */}
+                    {suggestions.length > 0 && (
+                      <div className="pt-1">
+                        <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground block mb-1.5">
+                          Follow-up Topics:
+                        </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {suggestions.map((sug, idx) => (
+                            <button
+                              key={idx}
+                              onClick={() => handleSuggestionClick(sug)}
+                              className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary hover:bg-primary/20 transition flex items-center gap-1"
+                            >
+                              <span>{sug}</span>
+                              <span className="opacity-60">→</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Inline Quiz Prompt */}
+                    {activeConversationId && (
+                      <div className="pt-2 border-t border-border/50 flex items-center justify-between text-xs">
+                        <Link
+                          href={`/quiz?mode=chat&conversationId=${activeConversationId}${
+                            activeTopic ? `&slug=${activeTopic}` : ""
+                          }`}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
+                        >
+                          <Sparkles className="h-3 w-3" />
+                          <span>Test your understanding with a 3-question quiz on this →</span>
+                        </Link>
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -333,7 +438,7 @@ function ChatContent() {
               </div>
               <div className="rounded-2xl border border-border bg-card/60 px-4 py-3 text-xs text-muted-foreground flex items-center gap-2">
                 <Sparkles className="h-3.5 w-3.5 text-primary animate-spin" />
-                <span>Formulating Socratic counter-question...</span>
+                <span>Formulating explanation and concept check...</span>
               </div>
             </div>
           )}
@@ -380,7 +485,7 @@ export default function ChatPage() {
     <React.Suspense
       fallback={
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center text-muted-foreground text-sm">
-          Loading Socratic dialogue session...
+          Loading adaptive tutor session...
         </div>
       }
     >

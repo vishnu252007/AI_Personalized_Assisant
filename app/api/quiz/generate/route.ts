@@ -15,6 +15,11 @@ import { calculateEffectiveMastery } from "@/lib/learner/mastery";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { requireUser, apiError, handleRouteError } from "@/lib/api-helpers";
 import { getFallbackQuestions } from "@/lib/ai/fallback-questions";
+import {
+  extractConceptFromConversation,
+  ensureTopicExists,
+  toConceptSlug,
+} from "@/lib/learner/concepts";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -46,55 +51,139 @@ export async function POST(request: Request) {
       );
     }
 
-    const { mode, topicSlug: requestedSlug } = parsed.data;
+    const {
+      mode,
+      topicSlug: requestedSlug,
+      conversationId,
+      conceptName: requestedConceptName,
+      count: requestedCount,
+    } = parsed.data;
+
     const admin = createAdminClient();
 
-    // 1. Fetch user's learner states
-    const { data: states } = await admin
-      .from("learner_topic_state")
-      .select(
-        "topic_id, mastery_score, half_life_days, last_reviewed_at, misconceptions, topics(id, slug, name, difficulty_level)"
-      )
-      .eq("user_id", user.id);
-
-    // Build a set of topic slugs the user has seen
-    const seenSlugs = new Set(
-      (states || [])
-        .map(
-          (s: { topics?: { slug: string } | null }) => s.topics?.slug
-        )
-        .filter(Boolean) as string[]
-    );
-
-    let targetTopicSlug = requestedSlug;
+    let targetTopicSlug = requestedSlug || "arrays-and-hashing";
+    let targetTopicName = "Arrays & Hashing";
     let targetDifficulty = 2;
-    let questionCount = 4;
+    let questionCount = requestedCount || 4;
     let topMisconceptions: string[] = [];
+    let topicId: string | null = null;
 
-    if (mode === "diagnostic") {
-      // Diagnostic mode: 6-8 questions across core topics
-      questionCount = 7;
-      // Include unseen topics in diagnostics
-      const unseenTopics = CURATED_TOPICS.filter(
-        (t) => !seenSlugs.has(t.slug)
+    if (mode === "chat" || conversationId) {
+      // -------------------------------------------------------------
+      // Chat-Driven Quiz Mode
+      // Extract target concept and misconceptions from active conversation
+      // -------------------------------------------------------------
+      questionCount = requestedCount || 3;
+
+      let convMessages: { role: string; content: string }[] = [];
+      if (conversationId) {
+        const { data: dbMessages } = await admin
+          .from("messages")
+          .select("role, content")
+          .eq("conversation_id", conversationId)
+          .order("created_at", { ascending: true })
+          .limit(20);
+
+        convMessages = dbMessages || [];
+      }
+
+      if (convMessages.length > 0) {
+        const extracted = await extractConceptFromConversation(convMessages);
+        targetTopicSlug = extracted.conceptSlug;
+        targetTopicName = requestedConceptName || extracted.conceptName;
+        targetDifficulty = extracted.difficulty;
+        topMisconceptions = extracted.misconceptions;
+      } else if (requestedConceptName) {
+        targetTopicName = requestedConceptName;
+        targetTopicSlug = toConceptSlug(requestedConceptName);
+      }
+
+      // Ensure open concept exists dynamically in public.topics
+      const topicRecord = await ensureTopicExists(admin, {
+        name: targetTopicName,
+        slug: targetTopicSlug,
+        difficultyLevel: targetDifficulty,
+      });
+
+      topicId = topicRecord.id;
+      targetTopicSlug = topicRecord.slug;
+      targetTopicName = topicRecord.name;
+    } else if (mode === "diagnostic") {
+      // -------------------------------------------------------------
+      // Diagnostic Mode: 7 questions across core topics
+      // -------------------------------------------------------------
+      questionCount = requestedCount || 7;
+
+      const { data: states } = await admin
+        .from("learner_topic_state")
+        .select("topics(slug)")
+        .eq("user_id", user.id);
+
+      const seenSlugs = new Set(
+        (states || [])
+          .map((s: { topics?: { slug: string } | null }) => s.topics?.slug)
+          .filter(Boolean) as string[]
       );
+
+      const unseenTopics = CURATED_TOPICS.filter((t) => !seenSlugs.has(t.slug));
       const firstUnseen = unseenTopics[0];
       targetTopicSlug = firstUnseen?.slug || "arrays-and-hashing";
+      const match = CURATED_TOPICS.find((t) => t.slug === targetTopicSlug);
+      targetTopicName = match?.name || "Arrays & Hashing";
       targetDifficulty = 2;
+
+      const topicRecord = await ensureTopicExists(admin, {
+        name: targetTopicName,
+        slug: targetTopicSlug,
+        difficultyLevel: targetDifficulty,
+      });
+      topicId = topicRecord.id;
     } else if (mode === "topic" && requestedSlug) {
-      // Topic mode: validate slug exists in curated list
+      // -------------------------------------------------------------
+      // Topic Mode: Curated or open concept
+      // -------------------------------------------------------------
+      questionCount = requestedCount || 4;
       const match = CURATED_TOPICS.find((t) => t.slug === requestedSlug);
-      if (!match) {
-        return apiError(
-          `Unknown topic slug: "${requestedSlug}"`,
-          "UNKNOWN_TOPIC",
-          400
-        );
+
+      if (match) {
+        targetTopicSlug = match.slug;
+        targetTopicName = match.name;
+        targetDifficulty = match.difficultyLevel;
+      } else {
+        targetTopicSlug = toConceptSlug(requestedSlug);
+        targetTopicName =
+          requestedConceptName ||
+          requestedSlug
+            .replace(/-/g, " ")
+            .replace(/\b\w/g, (c) => c.toUpperCase());
+        targetDifficulty = 2;
       }
-      targetTopicSlug = match.slug;
-      targetDifficulty = match.difficultyLevel;
+
+      const topicRecord = await ensureTopicExists(admin, {
+        name: targetTopicName,
+        slug: targetTopicSlug,
+        difficultyLevel: targetDifficulty,
+      });
+      topicId = topicRecord.id;
     } else {
-      // Recommended mode: pick lowest retention topic, or unseen, or lowest mastery
+      // -------------------------------------------------------------
+      // Recommended Mode: Spaced repetition retention & mastery
+      // -------------------------------------------------------------
+      questionCount = requestedCount || 4;
+
+      const { data: states } = await admin
+        .from("learner_topic_state")
+        .select(
+          "topic_id, mastery_score, half_life_days, last_reviewed_at, misconceptions, topics(id, slug, name, difficulty_level)"
+        )
+        .eq("user_id", user.id);
+
+      const seenSlugs = new Set(
+        (states || [])
+          .map((s: { topics?: { slug: string } | null }) => s.topics?.slug)
+          .filter(Boolean) as string[]
+      );
+
       const evaluated = (states || []).map((s) => {
         const diffMs = Math.max(
           0,
@@ -111,6 +200,7 @@ export async function POST(request: Request) {
         );
         return {
           slug: s.topics?.slug,
+          name: s.topics?.name,
           difficulty: s.topics?.difficulty_level || 2,
           isDue: isDueForReview(R),
           effectiveMastery: effective,
@@ -120,35 +210,34 @@ export async function POST(request: Request) {
         };
       });
 
-      // Priority 1: lowest retention (most forgotten) topic
+      // Priority 1: lowest retention (due for review)
       const dueTopics = evaluated
         .filter((e) => e.isDue && e.slug)
         .sort((a, b) => a.retentionProbability - b.retentionProbability);
 
       if (dueTopics.length > 0 && dueTopics[0].slug) {
         targetTopicSlug = dueTopics[0].slug;
-        // Derive difficulty from mastery
+        targetTopicName = dueTopics[0].name || targetTopicSlug;
         targetDifficulty = Math.max(
           1,
           Math.min(5, Math.round(dueTopics[0].mastery * 5))
         );
-        // Collect top misconceptions
         topMisconceptions = Object.entries(dueTopics[0].misconceptions)
           .sort((a, b) => (b[1] as number) - (a[1] as number))
           .slice(0, 3)
           .map(([tag]) => tag);
       } else if (evaluated.length > 0) {
-        // Check for unseen topics first
         const unseenTopics = CURATED_TOPICS.filter(
           (t) => !seenSlugs.has(t.slug)
         );
         if (unseenTopics.length > 0) {
           targetTopicSlug = unseenTopics[0].slug;
+          targetTopicName = unseenTopics[0].name;
           targetDifficulty = unseenTopics[0].difficultyLevel;
         } else {
-          // Lowest effective mastery
           evaluated.sort((a, b) => a.effectiveMastery - b.effectiveMastery);
-          targetTopicSlug = evaluated[0].slug;
+          targetTopicSlug = evaluated[0].slug || "arrays-and-hashing";
+          targetTopicName = evaluated[0].name || "Arrays & Hashing";
           targetDifficulty = Math.max(
             1,
             Math.min(5, Math.round(evaluated[0].mastery * 5))
@@ -159,24 +248,18 @@ export async function POST(request: Request) {
             .map(([tag]) => tag);
         }
       } else {
-        // First session
         targetTopicSlug = "arrays-and-hashing";
+        targetTopicName = "Arrays & Hashing";
         targetDifficulty = 1;
       }
+
+      const topicRecord = await ensureTopicExists(admin, {
+        name: targetTopicName,
+        slug: targetTopicSlug,
+        difficultyLevel: targetDifficulty,
+      });
+      topicId = topicRecord.id;
     }
-
-    const topicMeta =
-      CURATED_TOPICS.find((t) => t.slug === targetTopicSlug) ||
-      CURATED_TOPICS[0];
-
-    // Ensure topic exists in DB
-    const { data: dbTopic } = await admin
-      .from("topics")
-      .select("id")
-      .eq("slug", topicMeta.slug)
-      .single();
-
-    const topicId = dbTopic?.id || null;
 
     // 2. Generate questions with AI Provider, with fallback question bank
     let questions: QuizQuestionGenerated[];
@@ -184,7 +267,7 @@ export async function POST(request: Request) {
     try {
       const provider = getProvider();
       const prompt = buildQuizGeneratorPrompt(
-        topicMeta.name,
+        targetTopicName,
         targetDifficulty,
         questionCount,
         topMisconceptions
@@ -200,7 +283,7 @@ export async function POST(request: Request) {
         "[Quiz Generate] AI generation failed, using fallback bank:",
         aiErr
       );
-      const fallback = getFallbackQuestions(topicMeta.slug, questionCount);
+      const fallback = getFallbackQuestions(targetTopicSlug, questionCount);
       questions = fallback;
     }
 
@@ -212,18 +295,36 @@ export async function POST(request: Request) {
       );
     }
 
-    // 3. Insert Quiz + Questions + Keys in a batch with error checking
-    const { data: quiz, error: quizError } = await admin
+    // 3. Insert Quiz + Questions + Keys in a batch with graceful schema handling
+    const baseQuizPayload = {
+      user_id: user.id,
+      topic_id: topicId,
+      difficulty_level: targetDifficulty,
+      status: "in_progress" as const,
+      total_questions: questions.length,
+    };
+
+    let { data: quiz, error: quizError } = await admin
       .from("quizzes")
       .insert({
-        user_id: user.id,
-        topic_id: topicId,
-        difficulty_level: targetDifficulty,
-        status: "in_progress",
-        total_questions: questions.length,
+        ...baseQuizPayload,
+        conversation_id: conversationId || null,
+        concept_slug: targetTopicSlug,
       })
       .select("id, status, difficulty_level, total_questions, created_at")
       .single();
+
+    // Fallback if migration 003 hasn't run yet in remote database (missing columns)
+    if (quizError && (quizError.code === "42703" || quizError.message?.includes("column"))) {
+      const retry = await admin
+        .from("quizzes")
+        .insert(baseQuizPayload)
+        .select("id, status, difficulty_level, total_questions, created_at")
+        .single();
+
+      quiz = retry.data;
+      quizError = retry.error;
+    }
 
     if (quizError || !quiz) {
       return apiError(
@@ -249,7 +350,7 @@ export async function POST(request: Request) {
       .select("id, question_text, options, difficulty, order_index");
 
     if (batchQErr || !insertedQuestions || insertedQuestions.length === 0) {
-      // Rollback: delete the quiz since questions failed
+      // Rollback
       await admin.from("quizzes").delete().eq("id", quiz.id);
       return apiError(
         "Failed to insert quiz questions",
@@ -271,7 +372,7 @@ export async function POST(request: Request) {
       .insert(keyInserts);
 
     if (batchKeyErr) {
-      // Rollback: delete quiz and its questions
+      // Rollback
       await admin.from("questions").delete().eq("quiz_id", quiz.id);
       await admin.from("quizzes").delete().eq("id", quiz.id);
       return apiError(
@@ -281,7 +382,25 @@ export async function POST(request: Request) {
       );
     }
 
-    // Strip secrets from client payload
+    // Non-blocking learning event logging
+    Promise.resolve(
+      admin
+        .from("learning_events")
+        .insert({
+          user_id: user.id,
+          event_type: "quiz_generated",
+          topic_id: topicId,
+          conversation_id: conversationId || null,
+          concept_slug: targetTopicSlug,
+          metadata: {
+            mode,
+            question_count: questions.length,
+            difficulty: targetDifficulty,
+          },
+        })
+    ).catch(() => {});
+
+    // Strip secrets from client payload (no answers or keys exposed)
     const clientQuestions = insertedQuestions.map((iq) => ({
       id: iq.id,
       questionText: iq.question_text,
@@ -293,11 +412,12 @@ export async function POST(request: Request) {
     return Response.json({
       quiz: {
         id: quiz.id,
-        topicSlug: topicMeta.slug,
-        topicName: topicMeta.name,
+        topicSlug: targetTopicSlug,
+        topicName: targetTopicName,
         difficultyLevel: quiz.difficulty_level,
         status: quiz.status,
         totalQuestions: clientQuestions.length,
+        conversationId: conversationId || null,
       },
       questions: clientQuestions,
     });

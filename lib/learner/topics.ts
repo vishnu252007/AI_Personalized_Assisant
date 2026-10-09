@@ -34,19 +34,27 @@ export const CURATED_TOPICS: TopicDefinition[] = [
 export const CURATED_TOPIC_SLUGS = CURATED_TOPICS.map((t) => t.slug) as readonly string[];
 
 /**
- * Strict slug canonicalization: listed slug → slug, anything else → "other".
- * No fuzzy matching, no keyword synonyms.
+ * Strict slug canonicalization: listed slug → slug, or sanitized open slug if allowOpenTopics is true.
  */
-export function canonicalizeTopicSlug(rawInput: string): string {
+export function canonicalizeTopicSlug(rawInput: string, allowOpenTopics: boolean = false): string {
   if (!rawInput || typeof rawInput !== "string") {
     return "other";
   }
 
-  const normalized = rawInput.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const normalized = rawInput
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
 
   const match = CURATED_TOPICS.find((t) => t.slug === normalized);
   if (match) {
     return match.slug;
+  }
+
+  if (allowOpenTopics && normalized.length > 0) {
+    return normalized.slice(0, 40);
   }
 
   return "other";

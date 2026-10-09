@@ -57,10 +57,14 @@ export type SubmitAnswerPayload = z.infer<typeof submitAnswerSchema>;
 
 /**
  * Quiz Generation Request Payload Schema.
+ * Supports open topics, chat conversations, and recommended/diagnostic modes.
  */
 export const generateQuizRequestSchema = z.object({
   topicSlug: z.string().optional(),
-  mode: z.enum(["recommended", "topic", "diagnostic"]).default("recommended"),
+  conversationId: z.string().uuid("Invalid conversation UUID").optional(),
+  conceptName: z.string().min(1).max(100).optional(),
+  mode: z.enum(["recommended", "topic", "diagnostic", "chat"]).default("recommended"),
+  count: z.number().int().min(1).max(10).optional(),
 });
 
 export type GenerateQuizRequest = z.infer<typeof generateQuizRequestSchema>;
