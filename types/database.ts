@@ -91,6 +91,9 @@ export interface Database {
           attempts_count: number;
           last_reviewed_at: string;
           misconceptions: Json;
+          stage: "unseen" | "exploring" | "developing" | "proficient" | "mastered";
+          evidence_count: number;
+          streak: number;
           created_at: string;
           updated_at: string;
         };
@@ -103,6 +106,9 @@ export interface Database {
           attempts_count?: number;
           last_reviewed_at?: string;
           misconceptions?: Json;
+          stage?: "unseen" | "exploring" | "developing" | "proficient" | "mastered";
+          evidence_count?: number;
+          streak?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -115,6 +121,9 @@ export interface Database {
           attempts_count?: number;
           last_reviewed_at?: string;
           misconceptions?: Json;
+          stage?: "unseen" | "exploring" | "developing" | "proficient" | "mastered";
+          evidence_count?: number;
+          streak?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -451,6 +460,90 @@ export interface Database {
           concept_slug?: string | null;
           metadata?: Json;
           created_at?: string;
+        };
+        Relationships: [];
+      };
+      plan_items: {
+        Row: {
+          id: string;
+          user_id: string;
+          plan_date: string;
+          type: "review" | "micro_lesson" | "practice" | "reflect";
+          topic_id: string | null;
+          concept_name: string;
+          concept_slug: string;
+          est_minutes: number;
+          status: "pending" | "completed" | "skipped";
+          reason: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          plan_date?: string;
+          type: "review" | "micro_lesson" | "practice" | "reflect";
+          topic_id?: string | null;
+          concept_name: string;
+          concept_slug: string;
+          est_minutes?: number;
+          status?: "pending" | "completed" | "skipped";
+          reason: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          plan_date?: string;
+          type?: "review" | "micro_lesson" | "practice" | "reflect";
+          topic_id?: string | null;
+          concept_name?: string;
+          concept_slug?: string;
+          est_minutes?: number;
+          status?: "pending" | "completed" | "skipped";
+          reason?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      learner_traits: {
+        Row: {
+          user_id: string;
+          preferred_depth: "concise" | "balanced" | "in-depth";
+          preferred_length: "short" | "standard" | "detailed";
+          preferred_style: "analogy" | "steps" | "code_first";
+          pace: "slow" | "moderate" | "fast";
+          persistence_score: number;
+          theory_vs_problem_ratio: number;
+          daily_goal_minutes: number;
+          active_hours: Json;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          preferred_depth?: "concise" | "balanced" | "in-depth";
+          preferred_length?: "short" | "standard" | "detailed";
+          preferred_style?: "analogy" | "steps" | "code_first";
+          pace?: "slow" | "moderate" | "fast";
+          persistence_score?: number;
+          theory_vs_problem_ratio?: number;
+          daily_goal_minutes?: number;
+          active_hours?: Json;
+          updated_at?: string;
+        };
+        Update: {
+          user_id?: string;
+          preferred_depth?: "concise" | "balanced" | "in-depth";
+          preferred_length?: "short" | "standard" | "detailed";
+          preferred_style?: "analogy" | "steps" | "code_first";
+          pace?: "slow" | "moderate" | "fast";
+          persistence_score?: number;
+          theory_vs_problem_ratio?: number;
+          daily_goal_minutes?: number;
+          active_hours?: Json;
+          updated_at?: string;
         };
         Relationships: [];
       };

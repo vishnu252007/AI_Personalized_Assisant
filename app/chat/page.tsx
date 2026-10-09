@@ -76,6 +76,105 @@ function parseAssistantMessage(text: string): ParsedMessage {
   };
 }
 
+function ConceptCheckCard({
+  question,
+  conversationId,
+  conceptSlug,
+}: {
+  question: string;
+  conversationId?: string;
+  conceptSlug?: string;
+}) {
+  const [answer, setAnswer] = React.useState("");
+  const [submitting, setSubmitting] = React.useState(false);
+  const [result, setResult] = React.useState<{
+    evaluation: "correct" | "partial" | "wrong";
+    feedback: string;
+    misconceptionTag?: string | null;
+  } | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!answer.trim() || submitting) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/chat/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          questionText: question,
+          studentAnswer: answer.trim(),
+          conversationId,
+          conceptSlug,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setResult(data);
+      }
+    } catch {
+      // Ignored
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs space-y-2.5">
+      <div className="flex items-center gap-1.5 font-semibold text-amber-500">
+        <HelpCircle className="h-3.5 w-3.5" />
+        <span>Concept Check</span>
+      </div>
+      <p className="text-foreground/90 font-medium">{question}</p>
+
+      {result ? (
+        <div
+          className={`rounded-lg p-2.5 space-y-1 text-xs border ${
+            result.evaluation === "correct"
+              ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+              : result.evaluation === "partial"
+              ? "border-amber-500/30 bg-amber-500/15 text-amber-600 dark:text-amber-400"
+              : "border-rose-500/30 bg-rose-500/15 text-rose-600 dark:text-rose-400"
+          }`}
+        >
+          <div className="flex items-center gap-1.5 font-bold capitalize">
+            <span>
+              {result.evaluation === "correct"
+                ? "✓ Correct Understanding"
+                : result.evaluation === "partial"
+                ? "◐ Partially Correct"
+                : "✗ Needs Clarification"}
+            </span>
+            {result.misconceptionTag && (
+              <span className="rounded-md border border-rose-500/30 bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-mono lowercase">
+                tag: {result.misconceptionTag}
+              </span>
+            )}
+          </div>
+          <p className="text-foreground/80 leading-relaxed">{result.feedback}</p>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit} className="flex gap-2 pt-1">
+          <input
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            disabled={submitting}
+            placeholder="Type your answer to verify your reasoning..."
+            className="flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          <button
+            type="submit"
+            disabled={!answer.trim() || submitting}
+            className="rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/30 px-3 py-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400 transition disabled:opacity-50"
+          >
+            {submitting ? "Checking..." : "Submit"}
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
 function ChatContent() {
   const searchParams = useSearchParams();
   const initialTopicSlug = searchParams.get("topic") || "";
@@ -381,13 +480,11 @@ function ChatContent() {
 
                     {/* Styled Concept Check Card */}
                     {checkQuestion && (
-                      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
-                        <div className="flex items-center gap-1.5 font-semibold text-amber-500 mb-1">
-                          <HelpCircle className="h-3.5 w-3.5" />
-                          <span>Concept Check</span>
-                        </div>
-                        <p className="text-foreground/90">{checkQuestion}</p>
-                      </div>
+                      <ConceptCheckCard
+                        question={checkQuestion}
+                        conversationId={activeConversationId}
+                        conceptSlug={activeTopic || undefined}
+                      />
                     )}
 
                     {/* Clickable Next Chips */}
