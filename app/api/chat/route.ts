@@ -13,6 +13,7 @@ import { analyzeConversationTurn } from "@/lib/learner/analyzer";
 import { calculateRetentionProbability, isDueForReview } from "@/lib/learner/forgetting";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { requireUser, apiError, handleRouteError } from "@/lib/api-helpers";
+import { type TutorContext, type LearnerStage } from "@/lib/ai/prompts";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -306,6 +307,28 @@ export async function POST(request: Request) {
 
     dbDuration = Date.now() - dbStart;
 
+    // Derive learner stage from mastery or stated profile level
+    const stage: LearnerStage = (() => {
+      const level = profileRes.data?.level;
+      if (topicStates.length > 0) {
+        const avgMastery =
+          topicStates.reduce((acc, t) => acc + t.masteryScore, 0) / topicStates.length;
+        if (avgMastery < 0.35) return "novice";
+        if (avgMastery < 0.65) return "developing";
+        if (avgMastery < 0.85) return "proficient";
+        return "mastered";
+      }
+      if (level === "advanced") return "proficient";
+      if (level === "intermediate") return "developing";
+      return "novice";
+    })();
+
+    const tutorContext: TutorContext = {
+      stage,
+      conceptName: parsed.data.topicSlug || undefined,
+      misconceptions: Object.keys(misconceptions),
+    };
+
     // 8. Stream tutor response with resilient fallback
     const aiStart = Date.now();
     const provider = getProvider();
@@ -314,7 +337,8 @@ export async function POST(request: Request) {
       sanitizedProfileSummary,
       activeStyle,
       undefined,
-      request.signal
+      request.signal,
+      tutorContext
     );
     const aiDuration = Date.now() - aiStart;
 

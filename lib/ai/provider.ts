@@ -15,7 +15,7 @@ import {
 } from "ai";
 import { z } from "zod";
 import { getServerEnv } from "@/lib/env.server";
-import { buildSocraticTutorPrompt } from "./prompts";
+import { buildSocraticTutorPrompt, type TutorContext } from "./prompts";
 
 // ── Custom errors ──────────────────────────────────────────────────────────────
 
@@ -63,7 +63,8 @@ export interface AIProviderInterface {
     profileContext: string,
     style?: string,
     onFinish?: (event: { text: string }) => Promise<void> | void,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    tutorContext?: TutorContext
   ): Promise<TutorStreamResult>;
 
   generateStructured<T>(
@@ -205,9 +206,10 @@ export class CloudProvider implements AIProviderInterface {
     profileContext: string,
     style: string = "analogy",
     onFinish?: (event: { text: string }) => Promise<void> | void,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    tutorContext?: TutorContext
   ): Promise<TutorStreamResult> {
-    const instructions = buildSocraticTutorPrompt(profileContext, style);
+    const instructions = buildSocraticTutorPrompt(profileContext, style, tutorContext);
     const signal = createCompositeSignal(DEFAULT_TIMEOUT_MS, abortSignal);
 
     const result = streamText({
@@ -293,9 +295,10 @@ export class FallbackProvider implements AIProviderInterface {
     profileContext: string,
     style: string = "analogy",
     onFinish?: (event: { text: string }) => Promise<void> | void,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    tutorContext?: TutorContext
   ): Promise<TutorStreamResult> {
-    const instructions = buildSocraticTutorPrompt(profileContext, style);
+    const instructions = buildSocraticTutorPrompt(profileContext, style, tutorContext);
     const signal = createCompositeSignal(DEFAULT_TIMEOUT_MS, abortSignal);
 
     // 1. Attempt primary stream with buffering
