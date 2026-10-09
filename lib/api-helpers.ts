@@ -13,11 +13,11 @@ export function apiError(
   status: number,
   details?: unknown
 ): NextResponse {
-  const isProduction = process.env.NODE_ENV === "production";
-  const safeMessage = isProduction && status >= 500 ? "Internal server error" : message;
+  // Never expose internal error messages to client callers when status >= 500
+  const safeMessage = status >= 500 ? "Internal server error" : message;
 
   const body: Record<string, unknown> = { error: safeMessage, code };
-  if (details && !isProduction) {
+  if (details && process.env.NODE_ENV !== "production" && status < 500) {
     body.details = details;
   }
 
