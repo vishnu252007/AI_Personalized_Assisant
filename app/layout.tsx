@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
-import { Navbar } from "@/components/navbar";
 import { AccessibilityProvider } from "@/components/accessibility-provider";
+import { QueryProvider } from "@/components/query-provider";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -23,10 +23,11 @@ export default function RootLayout({
       <body className={inter.className}>
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
           <AccessibilityProvider>
-            <div className="flex min-h-screen flex-col bg-background text-foreground">
-              <Navbar />
-              <div className="flex-1">{children}</div>
-            </div>
+            <QueryProvider>
+              <div className="flex min-h-screen flex-col bg-background text-foreground">
+                {children}
+              </div>
+            </QueryProvider>
           </AccessibilityProvider>
         </ThemeProvider>
       </body>

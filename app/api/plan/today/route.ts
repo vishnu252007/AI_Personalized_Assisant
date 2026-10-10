@@ -1,6 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireUser, handleRouteError, apiError } from "@/lib/api-helpers";
-import { getOrCreateDailyPlan } from "@/lib/learner/engine-v2";
+import { getDailyPlanReadOnly, getOrCreateDailyPlan } from "@/lib/learner/engine-v2";
+import { after } from "next/server";
 import { z } from "zod";
 
 export const runtime = "nodejs";
@@ -25,7 +26,20 @@ export async function GET(request: Request) {
     const dateParam = url.searchParams.get("date") || new Date().toISOString().split("T")[0];
 
     const admin = createAdminClient();
-    const planItems = await getOrCreateDailyPlan(admin, user.id, dateParam);
+    const planItems = await getDailyPlanReadOnly(admin, user.id, dateParam);
+
+    // Asynchronously ensure plan persistence without blocking the response
+    try {
+      after(async () => {
+        try {
+          await getOrCreateDailyPlan(admin, user.id, dateParam);
+        } catch {
+          // Silent catch in background worker
+        }
+      });
+    } catch {
+      // after() might not be supported in test runners
+    }
 
     return Response.json({
       date: dateParam,

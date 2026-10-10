@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Brain, Sparkles, Mail, Lock, ArrowRight, AlertCircle, CheckCircle2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { prefetchOverviewData, prefetchConversationsData } from "@/lib/hooks/use-learn-query";
 
 export default function SignInPage() {
   const router = useRouter();
@@ -48,6 +49,9 @@ export default function SignInPage() {
         if (error) {
           setErrorMsg(error.message);
         } else {
+          // Prefetch overview and conversations immediately upon sign-in
+          prefetchOverviewData().catch(() => {});
+          prefetchConversationsData().catch(() => {});
           router.push("/dashboard");
           router.refresh();
         }

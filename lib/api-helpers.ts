@@ -46,6 +46,24 @@ export async function requireUser(): Promise<
 > {
   try {
     const supabase = await createClient();
+
+    // 1. Fast local JWT claims extraction without network roundtrip (if asymmetric signing or cached)
+    try {
+      const { data: claimsData } = await supabase.auth.getClaims();
+      if (claimsData?.claims?.sub) {
+        return {
+          user: {
+            id: claimsData.claims.sub as string,
+            email: claimsData.claims.email as string | undefined,
+          },
+          error: null,
+        };
+      }
+    } catch {
+      // Continue to getUser() fallback on any claims parsing failure
+    }
+
+    // 2. Fallback to full server verification
     const {
       data: { user },
       error: authError,
@@ -58,7 +76,7 @@ export async function requireUser(): Promise<
       };
     }
 
-    return { user, error: null };
+    return { user: { id: user.id, email: user.email }, error: null };
   } catch {
     return {
       user: null,

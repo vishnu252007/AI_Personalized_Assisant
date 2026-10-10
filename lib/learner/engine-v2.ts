@@ -214,6 +214,44 @@ export interface PlanItemResult {
   reason: string;
 }
 
+import { synthesizePlanItems } from "./overview";
+
+/**
+ * Read-only retrieval of the daily plan. Does NOT perform synchronous DB inserts.
+ */
+export async function getDailyPlanReadOnly(
+  admin: ReturnType<typeof createAdminClient>,
+  userId: string,
+  targetDate: string = new Date().toISOString().split("T")[0]
+): Promise<PlanItemResult[]> {
+  const { data: existingItems } = await admin
+    .from("plan_items")
+    .select("id, type, topic_id, concept_name, concept_slug, est_minutes, status, reason")
+    .eq("user_id", userId)
+    .eq("plan_date", targetDate)
+    .order("created_at", { ascending: true });
+
+  if (existingItems && existingItems.length > 0) {
+    return existingItems.map((item) => ({
+      id: item.id,
+      type: item.type as PlanItemResult["type"],
+      topicId: item.topic_id,
+      conceptName: item.concept_name,
+      conceptSlug: item.concept_slug,
+      estMinutes: item.est_minutes,
+      status: item.status as PlanItemResult["status"],
+      reason: item.reason,
+    }));
+  }
+
+  const { data: states } = await admin
+    .from("learner_topic_state")
+    .select("topic_id, mastery_score, half_life_days, last_reviewed_at, stage, evidence_count, topics(id, slug, name, difficulty_level)")
+    .eq("user_id", userId);
+
+  return synthesizePlanItems(states || []);
+}
+
 /**
  * Generates or fetches Today's personalized daily plan for the student.
  */

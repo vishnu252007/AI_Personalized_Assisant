@@ -156,4 +156,12 @@ describe("Route Handlers Security & Validation", () => {
       expect(res.status).toBe(401);
     });
   });
+
+  describe("GET /api/overview", () => {
+    it("returns 401 Unauthorized when unauthenticated", async () => {
+      const { GET: overviewGet } = await import("@/app/api/overview/route");
+      const res = await overviewGet();
+      expect(res.status).toBe(401);
+    });
+  });
 });

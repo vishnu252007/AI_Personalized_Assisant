@@ -20,6 +20,8 @@ import {
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
 
+import { prefetchTabData, prefetchOverviewData, prefetchConversationsData } from "@/lib/hooks/use-learn-query";
+
 interface UserInfo {
   id: string;
   email?: string;
@@ -43,6 +45,9 @@ export function Navbar() {
           email: data.user.email,
           fullName: data.user.user_metadata?.full_name || data.user.email?.split("@")[0],
         });
+        // Prefetch critical core data on authenticated session discovery
+        prefetchOverviewData().catch(() => {});
+        prefetchConversationsData().catch(() => {});
       }
     });
 
@@ -55,6 +60,8 @@ export function Navbar() {
           email: session.user.email,
           fullName: session.user.user_metadata?.full_name || session.user.email?.split("@")[0],
         });
+        prefetchOverviewData().catch(() => {});
+        prefetchConversationsData().catch(() => {});
       } else {
         setUser(null);
       }
@@ -69,7 +76,7 @@ export function Navbar() {
     { href: "/dashboard", label: "Today (Plan)", icon: CalendarCheck },
     { href: "/chat", label: "Chat", icon: MessageSquare },
     { href: "/quiz", label: "Practice", icon: Zap },
-    { href: "/dashboard#progress", label: "Progress", icon: TrendingUp },
+    { href: "/progress", label: "Progress", icon: TrendingUp },
     { href: "/settings", label: "Profile", icon: Settings },
   ];
 
@@ -77,6 +84,10 @@ export function Navbar() {
     const supabase = createClient();
     await supabase.auth.signOut();
     window.location.href = "/";
+  };
+
+  const handleTabPrefetch = (href: string) => {
+    prefetchTabData(href).catch(() => {});
   };
 
   return (
@@ -104,13 +115,14 @@ export function Navbar() {
             {navLinks.map((link) => {
               const Icon = link.icon;
               const isActive =
-                link.href.includes("#")
-                  ? pathname === "/dashboard"
-                  : pathname === link.href || (link.href !== "/dashboard" && pathname.startsWith(link.href));
+                pathname === link.href ||
+                (link.href !== "/dashboard" && pathname.startsWith(link.href));
               return (
                 <Link
                   key={link.href}
                   href={link.href}
+                  onMouseEnter={() => handleTabPrefetch(link.href)}
+                  onFocus={() => handleTabPrefetch(link.href)}
                   className={cn(
                     "flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
                     isActive
@@ -191,13 +203,14 @@ export function Navbar() {
         {navLinks.map((link) => {
           const Icon = link.icon;
           const isActive =
-            link.href.includes("#")
-              ? pathname === "/dashboard"
-              : pathname === link.href || (link.href !== "/dashboard" && pathname.startsWith(link.href));
+            pathname === link.href ||
+            (link.href !== "/dashboard" && pathname.startsWith(link.href));
           return (
             <Link
               key={link.href}
               href={link.href}
+              onTouchStart={() => handleTabPrefetch(link.href)}
+              onMouseEnter={() => handleTabPrefetch(link.href)}
               className={cn(
                 "flex flex-col items-center justify-center py-1 px-2 rounded-lg transition-colors text-[10px] font-semibold gap-0.5",
                 isActive

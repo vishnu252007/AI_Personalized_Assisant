@@ -62,12 +62,26 @@ export async function middleware(request: NextRequest) {
       }
     );
 
-    const {
-      data: { user: verifiedUser },
-      error: authError,
-    } = await supabase.auth.getUser();
+    let verifiedUser: { id: string; email?: string } | null = null;
+    const { data: claimsData } = await supabase.auth.getClaims();
 
-    if (!authError && verifiedUser) {
+    if (claimsData?.claims?.sub) {
+      verifiedUser = {
+        id: claimsData.claims.sub as string,
+        email: claimsData.claims.email as string | undefined,
+      };
+    } else {
+      const {
+        data: { user: fallbackUser },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (!authError && fallbackUser) {
+        verifiedUser = fallbackUser;
+      }
+    }
+
+    if (verifiedUser) {
       user = verifiedUser;
     }
   } catch (err) {
@@ -108,8 +122,9 @@ export const config = {
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico (favicon file)
+     * - api routes (handled directly by requireUser)
      * - Public image/asset files (.svg, .png, etc.)
      */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api(?:/.*|$)|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
